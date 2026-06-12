@@ -64,11 +64,11 @@ export function Header({ onExport }: HeaderProps) {
 
           const imagePromises = files.map(async (file) => {
             const objectUrl = URL.createObjectURL(file);
-            const img = new Image();
-            img.src = objectUrl;
+            const imgEl = document.createElement('img');
+            imgEl.src = objectUrl;
             await new Promise((resolve, reject) => {
-              img.onload = resolve;
-              img.onerror = reject;
+              imgEl.onload = resolve;
+              imgEl.onerror = reject;
             });
 
             return {
@@ -76,8 +76,8 @@ export function Header({ onExport }: HeaderProps) {
               name: file.name,
               path: objectUrl,
               url: objectUrl,
-              width: img.width,
-              height: img.height,
+              width: imgEl.naturalWidth,
+              height: imgEl.naturalHeight,
               size: file.size,
             } as ImageInfo;
           });

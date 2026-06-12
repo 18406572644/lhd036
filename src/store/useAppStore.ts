@@ -72,8 +72,10 @@ interface AppState {
   loadTemplate: (id: string) => void;
   deleteTemplate: (id: string) => void;
   updateExportConfig: (config: Partial<ExportConfig>) => void;
+  beginExport: (total: number) => void;
   setExportProgress: (progress: number) => void;
-  updateExportProgressDetail: (detail: Partial<ExportProgressDetail>) => void;
+  updateExportProgressDetail: (detail: Partial<ExportProgressDetail> & { accumulative?: boolean }) => void;
+  finishExport: () => void;
   resetExportProgress: () => void;
   loadTemplatesFromStorage: () => void;
 }
@@ -200,16 +202,46 @@ export const useAppStore = create<AppState>((set, get) => ({
       exportConfig: { ...state.exportConfig, ...config },
     })),
 
+  beginExport: (total) =>
+    set({
+      isExporting: true,
+      exportProgress: 0,
+      exportProgressDetail: {
+        currentFile: '',
+        completed: 0,
+        total,
+        success: 0,
+        failed: 0,
+      },
+    }),
+
   setExportProgress: (progress) =>
     set({
-      exportProgress: progress,
-      isExporting: progress > 0 && progress < 100,
+      exportProgress: Math.max(0, Math.min(100, progress)),
     }),
 
   updateExportProgressDetail: (detail) =>
-    set((state) => ({
-      exportProgressDetail: { ...state.exportProgressDetail, ...detail },
-    })),
+    set((state) => {
+      if (detail.accumulative) {
+        const prev = state.exportProgressDetail;
+        const merged: ExportProgressDetail = {
+          ...prev,
+          ...detail,
+          success: prev.success + (detail.success || 0),
+          failed: prev.failed + (detail.failed || 0),
+        };
+        return { exportProgressDetail: merged };
+      }
+      return {
+        exportProgressDetail: { ...state.exportProgressDetail, ...detail },
+      };
+    }),
+
+  finishExport: () =>
+    set({
+      isExporting: false,
+      exportProgress: 100,
+    }),
 
   resetExportProgress: () =>
     set({

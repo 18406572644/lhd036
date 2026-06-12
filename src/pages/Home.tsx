@@ -23,6 +23,7 @@ export default function Home() {
   useEffect(() => {
     const removeListener = electronApi.onExportProgress((progress) => {
       updateExportProgressDetail({
+        accumulative: true,
         currentFile: progress.path,
         completed: progress.current,
         total: progress.total,

@@ -1,18 +1,146 @@
-import { Radio, Slider, Space, Typography, Button, Progress, message } from 'antd';
-import { Download, Folder, Image, CheckSquare, Square } from 'lucide-react';
+import { Radio, Slider, Space, Typography, Button, Progress, message, Input } from 'antd';
+import { Download, Folder, Image as ImageIcon, CheckSquare, Square } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { electronApi } from '@/utils/electronApi';
-import { useState } from 'react';
+import {
+  generateTextWatermarkSVG,
+  getTextWatermarkSize,
+  calculatePosition,
+  getAdaptiveScale,
+  calculateRotatedBoundingBox,
+} from '@/utils/watermarkUtils';
+import { useState, useCallback } from 'react';
 import type { ExportConfig } from '@/types';
 
 const { Text } = Typography;
 
 type ExportScope = 'all' | 'selected';
 
+function drawWatermarkOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  watermarkConfig: ReturnType<typeof useAppStore.getState>['watermarkConfig'],
+  targetW: number,
+  targetH: number
+): Promise<void> {
+  return new Promise((resolve) => {
+    ctx.clearRect(0, 0, targetW, targetH);
+    ctx.drawImage(img, 0, 0, targetW, targetH);
+
+    const adaptiveScale = getAdaptiveScale(img.width);
+
+    if (watermarkConfig.type === 'text') {
+      const textCfg = watermarkConfig.text;
+      if (!textCfg.text || !textCfg.text.trim()) {
+        resolve();
+        return;
+      }
+
+      const adaptiveTextCfg = {
+        ...textCfg,
+        fontSize: Math.max(8, Math.round(textCfg.fontSize * adaptiveScale)),
+      };
+
+      const { bboxWidth, bboxHeight } = getTextWatermarkSize(adaptiveTextCfg);
+      const position = calculatePosition(
+        watermarkConfig.position,
+        targetW,
+        targetH,
+        bboxWidth,
+        bboxHeight,
+        watermarkConfig.margin * adaptiveScale,
+        {
+          x: watermarkConfig.positionValue.x * adaptiveScale,
+          y: watermarkConfig.positionValue.y * adaptiveScale,
+        }
+      );
+
+      const svg = generateTextWatermarkSVG(adaptiveTextCfg);
+      const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(svgBlob);
+      const wmImg = document.createElement('img');
+      wmImg.onload = () => {
+        ctx.drawImage(wmImg, position.x, position.y, bboxWidth, bboxHeight);
+        URL.revokeObjectURL(url);
+        resolve();
+      };
+      wmImg.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve();
+      };
+      wmImg.src = url;
+    } else if (watermarkConfig.type === 'image' && watermarkConfig.image.imageUrl) {
+      const imgCfg = watermarkConfig.image;
+      const adaptiveW = Math.max(4, imgCfg.width * adaptiveScale);
+      const adaptiveH = Math.max(4, imgCfg.height * adaptiveScale);
+
+      const wmImg = document.createElement('img');
+      wmImg.crossOrigin = 'anonymous';
+      wmImg.onload = () => {
+        const bbox =
+          imgCfg.rotation !== 0
+            ? calculateRotatedBoundingBox(adaptiveW, adaptiveH, imgCfg.rotation)
+            : { width: adaptiveW, height: adaptiveH };
+
+        const position = calculatePosition(
+          watermarkConfig.position,
+          targetW,
+          targetH,
+          bbox.width,
+          bbox.height,
+          watermarkConfig.margin * adaptiveScale,
+          {
+            x: watermarkConfig.positionValue.x * adaptiveScale,
+            y: watermarkConfig.positionValue.y * adaptiveScale,
+          }
+        );
+
+        const cx = position.x + bbox.width / 2;
+        const cy = position.y + bbox.height / 2;
+
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate((imgCfg.rotation * Math.PI) / 180);
+        ctx.globalAlpha = imgCfg.opacity;
+        ctx.drawImage(wmImg, -adaptiveW / 2, -adaptiveH / 2, adaptiveW, adaptiveH);
+        ctx.restore();
+        resolve();
+      };
+      wmImg.onerror = () => resolve();
+      wmImg.src = imgCfg.imageUrl;
+    } else {
+      resolve();
+    }
+  });
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, format: string, quality: number): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    const mime =
+      format === 'jpeg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png';
+    const q = format === 'png' ? undefined : quality / 100;
+    canvas.toBlob((b) => resolve(b), mime, q);
+  });
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const a = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export default function ExportTab() {
   const exportConfig = useAppStore((state) => state.exportConfig);
   const updateExportConfig = useAppStore((state) => state.updateExportConfig);
+  const beginExport = useAppStore((state) => state.beginExport);
   const setExportProgress = useAppStore((state) => state.setExportProgress);
+  const updateExportProgressDetail = useAppStore((state) => state.updateExportProgressDetail);
+  const finishExport = useAppStore((state) => state.finishExport);
   const exportProgress = useAppStore((state) => state.exportProgress);
   const isExporting = useAppStore((state) => state.isExporting);
   const images = useAppStore((state) => state.images);
@@ -41,67 +169,147 @@ export default function ExportTab() {
     }
   };
 
-  const handleExport = async () => {
-    if (!exportConfig.outputDir) {
-      message.warning('请先选择输出目录');
-      return;
-    }
+  const browserExport = useCallback(
+    async (exportItems: typeof images) => {
+      const total = exportItems.length;
+      beginExport(total);
 
-    const exportItems = exportScope === 'all' 
-      ? images 
-      : images.filter((img) => selectedIds.includes(img.id));
+      const offscreen = document.createElement('canvas');
+      const ctx = offscreen.getContext('2d');
+      if (!ctx) {
+        message.error('Canvas 不可用');
+        finishExport();
+        return;
+      }
+
+      let success = 0;
+      let failed = 0;
+
+      for (let i = 0; i < exportItems.length; i++) {
+        const item = exportItems[i];
+        try {
+          const img = document.createElement('img');
+          img.crossOrigin = 'anonymous';
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = () => reject(new Error('图片加载失败'));
+            img.src = item.url || item.path;
+          });
+
+          const targetW = img.naturalWidth;
+          const targetH = img.naturalHeight;
+          offscreen.width = targetW;
+          offscreen.height = targetH;
+
+          await drawWatermarkOnCanvas(ctx, img, watermarkConfig, targetW, targetH);
+
+          const blob = await canvasToBlob(offscreen, exportConfig.format, exportConfig.quality);
+          if (!blob) throw new Error('导出失败');
+
+          const ext = exportConfig.format;
+          const baseName = item.name.replace(/\.[^.]+$/, '');
+          const filename = `${exportConfig.prefix}${baseName}${exportConfig.suffix}.${ext}`;
+          triggerDownload(blob, filename);
+
+          success++;
+          const percent = Math.round(((i + 1) / total) * 100);
+          setExportProgress(percent);
+          updateExportProgressDetail({
+            accumulative: true,
+            currentFile: item.name,
+            completed: i + 1,
+            total,
+            success: 1,
+            failed: 0,
+          });
+        } catch (err) {
+          console.error(err);
+          failed++;
+          updateExportProgressDetail({
+            accumulative: true,
+            currentFile: item.name,
+            completed: i + 1,
+            total,
+            success: 0,
+            failed: 1,
+          });
+          const percent = Math.round(((i + 1) / total) * 100);
+          setExportProgress(percent);
+        }
+      }
+
+      finishExport();
+      if (failed === 0) {
+        message.success(`导出完成：成功 ${success} 张，已触发下载`);
+      } else {
+        message.warning(`导出完成：成功 ${success} 张，失败 ${failed} 张`);
+      }
+    },
+    [
+      watermarkConfig,
+      exportConfig,
+      beginExport,
+      setExportProgress,
+      updateExportProgressDetail,
+      finishExport,
+    ]
+  );
+
+  const handleExport = async () => {
+    const exportItems = exportScope === 'all' ? images : images.filter((img) => selectedIds.includes(img.id));
 
     if (exportItems.length === 0) {
       message.warning('没有可导出的图片');
       return;
     }
 
-    const items = exportItems.map((img) => ({
-      path: img.path,
-      name: img.name,
-    }));
-
-    try {
-      setExportProgress(0);
-
-      const result = await electronApi.exportImages(
-        exportConfig,
-        items,
-        watermarkConfig,
-        (progress) => {
-          const percent = Math.round((progress.current / progress.total) * 100);
-          setExportProgress(percent);
-        }
-      );
-
-      setExportProgress(100);
-
-      if (result.success) {
-        message.success(`导出完成：成功 ${result.successCount} 张，失败 ${result.failCount} 张`);
-      } else {
-        if (!electronApi.isElectron) {
-          message.info('导出功能仅在 Electron 环境中可用');
-        } else {
-          message.error('导出失败');
-        }
+    if (electronApi.isElectron) {
+      if (!exportConfig.outputDir) {
+        message.warning('请先选择输出目录');
+        return;
       }
-    } catch (error) {
-      console.error('Export failed:', error);
-      message.error('导出过程中发生错误');
-    } finally {
-      setTimeout(() => setExportProgress(0), 2000);
+
+      const items = exportItems.map((img) => ({ path: img.path, name: img.name }));
+      const total = items.length;
+      beginExport(total);
+      try {
+        const result = await electronApi.exportImages(
+          exportConfig,
+          items,
+          watermarkConfig,
+          (progress) => {
+            const percent = Math.round((progress.current / progress.total) * 100);
+            setExportProgress(percent);
+            updateExportProgressDetail({
+              accumulative: true,
+              currentFile: progress.path,
+              completed: progress.current,
+              total: progress.total,
+              success: progress.success ? 1 : 0,
+              failed: progress.success ? 0 : 1,
+            });
+          }
+        );
+
+        finishExport();
+        message.success(`导出完成：成功 ${result.successCount} 张，失败 ${result.failCount} 张`);
+      } catch (error) {
+        console.error('Export failed:', error);
+        finishExport();
+        message.error('导出过程中发生错误');
+      }
+    } else {
+      await browserExport(exportItems);
     }
   };
 
-  const getExportCount = () => {
-    return exportScope === 'all' ? images.length : selectedIds.length;
-  };
+  const getExportCount = () => (exportScope === 'all' ? images.length : selectedIds.length);
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+    <Space direction="vertical" size="middle" style={{ width: '100%', padding: '0 4px' }}>
       <div>
         <Space align="center" style={{ marginBottom: 12 }}>
-          <Image size={16} color="#00E5CC" />
+          <ImageIcon size={16} color="#00E5CC" />
           <Text strong>导出格式</Text>
         </Space>
         <Radio.Group
@@ -131,7 +339,7 @@ export default function ExportTab() {
 
       <div>
         <Space align="center" style={{ marginBottom: 8 }}>
-          <Image size={16} color="#00E5CC" />
+          <ImageIcon size={16} color="#00E5CC" />
           <Text strong>导出质量</Text>
           <Text type="secondary" style={{ marginLeft: 'auto' }}>
             {isQualityDisabled ? '无损' : `${exportConfig.quality}%`}
@@ -151,44 +359,69 @@ export default function ExportTab() {
         )}
       </div>
 
+      {electronApi.isElectron && (
+        <div>
+          <Space align="center" style={{ marginBottom: 12 }}>
+            <Folder size={16} color="#00E5CC" />
+            <Text strong>输出目录</Text>
+          </Space>
+          <Space style={{ width: '100%' }}>
+            <div
+              style={{
+                flex: 1,
+                padding: '8px 12px',
+                backgroundColor: '#2A2A3E',
+                borderRadius: 4,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                fontSize: 13,
+                color: exportConfig.outputDir ? 'rgba(255, 255, 255, 0.85)' : 'rgba(255, 255, 255, 0.45)',
+              }}
+            >
+              {exportConfig.outputDir || '未选择'}
+            </div>
+            <Button icon={<Folder size={14} />} onClick={handleSelectDirectory} disabled={isExporting}>
+              选择
+            </Button>
+          </Space>
+        </div>
+      )}
+
       <div>
         <Space align="center" style={{ marginBottom: 12 }}>
-          <Folder size={16} color="#00E5CC" />
-          <Text strong>输出目录</Text>
+          <Square size={16} color="#00E5CC" />
+          <Text strong>命名选项</Text>
         </Space>
-        <Space style={{ width: '100%' }}>
-          <div
-            style={{
-              flex: 1,
-              padding: '8px 12px',
-              backgroundColor: '#2A2A3E',
-              borderRadius: 4,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              fontSize: 13,
-              color: exportConfig.outputDir ? 'rgba(255, 255, 255, 0.85)' : 'rgba(255, 255, 255, 0.45)',
-            }}
-          >
-            {exportConfig.outputDir || '未选择'}
+        <Space style={{ width: '100%' }} direction="vertical" size={8}>
+          <div style={{ width: '100%' }}>
+            <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
+              前缀
+            </Text>
+            <Input
+              placeholder="如: watermark_"
+              value={exportConfig.prefix}
+              onChange={(e) => updateExportConfig({ prefix: e.target.value })}
+              disabled={isExporting}
+            />
           </div>
-          <Button
-            icon={<Folder size={14} />}
-            onClick={handleSelectDirectory}
-            disabled={isExporting}
-          >
-            选择
-          </Button>
+          <div style={{ width: '100%' }}>
+            <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
+              后缀
+            </Text>
+            <Input
+              placeholder="如: _已加水印"
+              value={exportConfig.suffix}
+              onChange={(e) => updateExportConfig({ suffix: e.target.value })}
+              disabled={isExporting}
+            />
+          </div>
         </Space>
       </div>
 
       <div>
         <Space align="center" style={{ marginBottom: 12 }}>
-          {exportScope === 'all' ? (
-            <CheckSquare size={16} color="#00E5CC" />
-          ) : (
-            <Square size={16} color="#00E5CC" />
-          )}
+          {exportScope === 'all' ? <CheckSquare size={16} color="#00E5CC" /> : <Square size={16} color="#00E5CC" />}
           <Text strong>导出范围</Text>
         </Space>
         <Radio.Group
@@ -230,10 +463,7 @@ export default function ExportTab() {
         <div>
           <Progress
             percent={exportProgress}
-            strokeColor={{
-              '0%': '#00E5CC',
-              '100%': '#00B3A0',
-            }}
+            strokeColor={{ '0%': '#00E5CC', '100%': '#00B3A0' }}
             showInfo
           />
         </div>
@@ -254,11 +484,17 @@ export default function ExportTab() {
           background: 'linear-gradient(135deg, #00E5CC 0%, #00B3A0 100%)',
           border: 'none',
           boxShadow: '0 0 20px rgba(0, 229, 204, 0.4)',
-          marginTop: 16,
+          marginTop: 8,
         }}
       >
         {isExporting ? '导出中...' : `开始导出 (${getExportCount()} 张)`}
       </Button>
+
+      {!electronApi.isElectron && (
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', textAlign: 'center' }}>
+          浏览器模式：将分别触发每一张图片的下载
+        </Text>
+      )}
     </Space>
   );
 }
