@@ -41,6 +41,196 @@ const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const sharp_1 = __importDefault(require("sharp"));
 let mainWindow = null;
+const activeWatches = new Map();
+let globalPaused = false;
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'tif']);
+function sendWatchLog(watchFolderId, filePath, action, message) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('watch-log', {
+            id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            watchFolderId,
+            timestamp: Date.now(),
+            filePath,
+            action,
+            message,
+        });
+    }
+}
+function shouldProcessFile(filePath, rule) {
+    const ext = path.extname(filePath).toLowerCase().replace('.', '');
+    if (rule.extensions.length > 0 && !rule.extensions.includes(ext))
+        return false;
+    if (!IMAGE_EXTENSIONS.has(ext))
+        return false;
+    try {
+        const stats = fs.statSync(filePath);
+        if (!stats.isFile())
+            return false;
+        if (rule.minFileSize > 0 && stats.size < rule.minFileSize)
+            return false;
+    }
+    catch {
+        return false;
+    }
+    return true;
+}
+function resolveOutputPath(inputPath, outputDir, config, rule) {
+    const ext = path.extname(inputPath);
+    const baseName = path.basename(inputPath, ext);
+    const outputName = `${config.prefix}${baseName}${config.suffix}.${config.format}`;
+    const outputPath = path.join(outputDir, outputName);
+    if (fs.existsSync(outputPath)) {
+        switch (rule.renameStrategy) {
+            case 'skip':
+                return null;
+            case 'overwrite':
+                return outputPath;
+            case 'suffix': {
+                let idx = 1;
+                let candidate;
+                do {
+                    candidate = path.join(outputDir, `${config.prefix}${baseName}${config.suffix}_${idx}.${config.format}`);
+                    idx++;
+                } while (fs.existsSync(candidate));
+                return candidate;
+            }
+        }
+    }
+    return outputPath;
+}
+async function processWatchFile(watchId, filePath, config) {
+    if (globalPaused)
+        return;
+    const activeWatch = activeWatches.get(watchId);
+    if (!activeWatch)
+        return;
+    const now = Date.now();
+    const lastProcessed = activeWatch.processedFiles.get(filePath);
+    if (lastProcessed && now - lastProcessed < 3000)
+        return;
+    if (!shouldProcessFile(filePath, config.rule)) {
+        sendWatchLog(watchId, filePath, 'skipped', '文件不满足处理规则');
+        return;
+    }
+    activeWatch.processedFiles.set(filePath, now);
+    sendWatchLog(watchId, filePath, 'processing', '正在处理...');
+    const outputPath = resolveOutputPath(filePath, config.outputDir, config.exportConfig, config.rule);
+    if (outputPath === null) {
+        sendWatchLog(watchId, filePath, 'skipped', '输出文件已存在，已跳过');
+        return;
+    }
+    try {
+        await processImage(filePath, outputPath, config.exportConfig, config.watermarkConfig);
+        sendWatchLog(watchId, filePath, 'success', `处理完成 → ${path.basename(outputPath)}`);
+    }
+    catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        sendWatchLog(watchId, filePath, 'error', `处理失败: ${msg}`);
+    }
+}
+function startWatching(config) {
+    stopWatching(config.id);
+    if (!config.enabled || !config.watchPath)
+        return;
+    if (!fs.existsSync(config.watchPath))
+        return;
+    const activeWatch = {
+        watcher: null,
+        timer: null,
+        processedFiles: new Map(),
+        config,
+    };
+    if (config.triggers.includes('create') || config.triggers.includes('change')) {
+        try {
+            const debounceMap = new Map();
+            activeWatch.watcher = fs.watch(config.watchPath, (eventType, filename) => {
+                if (!filename)
+                    return;
+                const filePath = path.join(config.watchPath, filename);
+                const isCreate = eventType === 'rename' && fs.existsSync(filePath);
+                const isChange = eventType === 'change';
+                const shouldTrigger = (isCreate && config.triggers.includes('create')) ||
+                    (isChange && config.triggers.includes('change'));
+                if (!shouldTrigger)
+                    return;
+                const existing = debounceMap.get(filePath);
+                if (existing)
+                    clearTimeout(existing);
+                debounceMap.set(filePath, setTimeout(() => {
+                    debounceMap.delete(filePath);
+                    processWatchFile(config.id, filePath, config);
+                }, 500));
+            });
+        }
+        catch (error) {
+            console.error(`Failed to watch ${config.watchPath}:`, error);
+        }
+    }
+    if (config.triggers.includes('timer') && config.scanInterval > 0) {
+        const scanDirectory = () => {
+            if (globalPaused || !config.enabled)
+                return;
+            try {
+                const files = fs.readdirSync(config.watchPath);
+                for (const file of files) {
+                    const filePath = path.join(config.watchPath, file);
+                    try {
+                        const stat = fs.statSync(filePath);
+                        if (stat.isFile()) {
+                            processWatchFile(config.id, filePath, config);
+                        }
+                    }
+                    catch {
+                        // skip unreadable files
+                    }
+                }
+            }
+            catch (error) {
+                console.error(`Scan error for ${config.watchPath}:`, error);
+            }
+        };
+        activeWatch.timer = setInterval(scanDirectory, config.scanInterval * 1000);
+    }
+    activeWatches.set(config.id, activeWatch);
+}
+function stopWatching(id) {
+    const active = activeWatches.get(id);
+    if (!active)
+        return;
+    if (active.watcher) {
+        active.watcher.close();
+    }
+    if (active.timer) {
+        clearInterval(active.timer);
+    }
+    activeWatches.delete(id);
+}
+function syncWatchers(configs) {
+    const currentIds = new Set(configs.map((c) => c.id));
+    for (const id of activeWatches.keys()) {
+        if (!currentIds.has(id)) {
+            stopWatching(id);
+        }
+    }
+    for (const config of configs) {
+        const existing = activeWatches.get(config.id);
+        if (existing) {
+            const cfgChanged = existing.config.watchPath !== config.watchPath ||
+                existing.config.triggers.join(',') !== config.triggers.join(',') ||
+                existing.config.scanInterval !== config.scanInterval ||
+                existing.config.enabled !== config.enabled;
+            if (cfgChanged) {
+                startWatching(config);
+            }
+            else {
+                existing.config = config;
+            }
+        }
+        else {
+            startWatching(config);
+        }
+    }
+}
 function createWindow() {
     mainWindow = new electron_1.BrowserWindow({
         width: 1400,
@@ -578,5 +768,44 @@ electron_1.ipcMain.handle('export-images', async (event, config, items, watermar
         failCount,
         results,
     };
+});
+electron_1.ipcMain.handle('watch-sync', async (_event, configs) => {
+    syncWatchers(configs);
+    return true;
+});
+electron_1.ipcMain.handle('watch-pause', async (_event, paused) => {
+    globalPaused = paused;
+    return true;
+});
+electron_1.ipcMain.handle('watch-stop-all', async () => {
+    for (const id of activeWatches.keys()) {
+        stopWatching(id);
+    }
+    return true;
+});
+electron_1.ipcMain.handle('watch-trigger-scan', async (_event, watchId) => {
+    const active = activeWatches.get(watchId);
+    if (!active || !active.config.watchPath)
+        return false;
+    try {
+        const files = fs.readdirSync(active.config.watchPath);
+        for (const file of files) {
+            const filePath = path.join(active.config.watchPath, file);
+            try {
+                const stat = fs.statSync(filePath);
+                if (stat.isFile()) {
+                    active.processedFiles.delete(filePath);
+                    processWatchFile(watchId, filePath, active.config);
+                }
+            }
+            catch {
+                // skip
+            }
+        }
+        return true;
+    }
+    catch {
+        return false;
+    }
 });
 //# sourceMappingURL=main.js.map

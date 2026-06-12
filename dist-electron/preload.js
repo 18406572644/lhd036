@@ -36,6 +36,27 @@ const api = {
             electron_1.ipcRenderer.removeListener('export-progress', handler);
         };
     },
+    watchSync: (configs) => {
+        return electron_1.ipcRenderer.invoke('watch-sync', configs);
+    },
+    watchPause: (paused) => {
+        return electron_1.ipcRenderer.invoke('watch-pause', paused);
+    },
+    watchStopAll: () => {
+        return electron_1.ipcRenderer.invoke('watch-stop-all');
+    },
+    watchTriggerScan: (watchId) => {
+        return electron_1.ipcRenderer.invoke('watch-trigger-scan', watchId);
+    },
+    onWatchLog: (callback) => {
+        const handler = (_event, log) => {
+            callback(log);
+        };
+        electron_1.ipcRenderer.on('watch-log', handler);
+        return () => {
+            electron_1.ipcRenderer.removeListener('watch-log', handler);
+        };
+    },
 };
 electron_1.contextBridge.exposeInMainWorld('electronAPI', api);
 //# sourceMappingURL=preload.js.map

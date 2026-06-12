@@ -343,6 +343,8 @@ export default function WatchMonitorTab() {
 
   const triggersValue = Form.useWatch('triggers', form) || [];
   const hasTimer = triggersValue.includes('timer');
+  const watchPathValue = Form.useWatch('watchPath', form) || '';
+  const outputDirValue = Form.useWatch('outputDir', form) || '';
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -453,7 +455,7 @@ export default function WatchMonitorTab() {
                   minWidth: 280,
                 }}
               >
-                {form.getFieldValue('watchPath') || '未选择'}
+                {watchPathValue || '未选择'}
               </div>
               <Button icon={<Folder size={14} />} onClick={handleSelectWatchPath}>
                 选择
@@ -477,7 +479,7 @@ export default function WatchMonitorTab() {
                   minWidth: 280,
                 }}
               >
-                {form.getFieldValue('outputDir') || '未选择'}
+                {outputDirValue || '未选择'}
               </div>
               <Button icon={<Folder size={14} />} onClick={handleSelectOutputDir}>
                 选择
