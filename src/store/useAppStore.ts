@@ -8,6 +8,8 @@ import type {
   WatermarkTemplate,
   ExportConfig,
   ExportProgressDetail,
+  TileConfig,
+  PreprocessConfig,
 } from '@/types';
 
 const STORAGE_KEY = 'watermark-templates';
@@ -29,6 +31,26 @@ const defaultImageConfig: ImageWatermarkConfig = {
   rotation: 0,
 };
 
+const defaultTileConfig: TileConfig = {
+  enabled: false,
+  horizontalSpacing: 50,
+  verticalSpacing: 50,
+  staggered: false,
+  offsetX: 0,
+  offsetY: 0,
+};
+
+const defaultPreprocessConfig: PreprocessConfig = {
+  resizeMode: 'none',
+  fixedWidth: 1920,
+  fixedHeight: 1080,
+  maxSide: 2000,
+  scalePercent: 100,
+  rotation: 'none',
+  targetMaxSize: 2,
+  targetMaxSizeEnabled: false,
+};
+
 const defaultWatermarkConfig: WatermarkConfig = {
   type: 'text',
   position: 'bottom-right',
@@ -36,6 +58,8 @@ const defaultWatermarkConfig: WatermarkConfig = {
   margin: 20,
   text: defaultTextConfig,
   image: defaultImageConfig,
+  tile: defaultTileConfig,
+  preprocess: defaultPreprocessConfig,
 };
 
 const defaultExportConfig: ExportConfig = {
@@ -67,6 +91,8 @@ interface AppState {
   updateWatermarkConfig: (config: Partial<WatermarkConfig>) => void;
   updateTextConfig: (config: Partial<TextWatermarkConfig>) => void;
   updateImageConfig: (config: Partial<ImageWatermarkConfig>) => void;
+  updateTileConfig: (config: Partial<TileConfig>) => void;
+  updatePreprocessConfig: (config: Partial<PreprocessConfig>) => void;
   updatePosition: (position: Position) => void;
   saveTemplate: (name: string) => void;
   loadTemplate: (id: string) => void;
@@ -156,6 +182,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       watermarkConfig: {
         ...state.watermarkConfig,
         image: { ...state.watermarkConfig.image, ...config },
+      },
+    })),
+
+  updateTileConfig: (config) =>
+    set((state) => ({
+      watermarkConfig: {
+        ...state.watermarkConfig,
+        tile: { ...state.watermarkConfig.tile, ...config },
+      },
+    })),
+
+  updatePreprocessConfig: (config) =>
+    set((state) => ({
+      watermarkConfig: {
+        ...state.watermarkConfig,
+        preprocess: { ...state.watermarkConfig.preprocess, ...config },
       },
     })),
 

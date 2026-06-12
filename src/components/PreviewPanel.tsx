@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import { Button, Slider, Space, Empty } from 'antd';
 import { ZoomIn, ZoomOut, Maximize, Minimize, RotateCcw, Image as ImageIcon } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
-import { renderWatermarkToCanvas } from '@/utils/watermarkUtils';
+import { renderWatermarkToCanvas, computePreprocessedSize } from '@/utils/watermarkUtils';
 import { electronApi } from '@/utils/electronApi';
 
 type ZoomMode = 'fit' | 'fitWidth' | 'fitHeight' | 'actual';
@@ -47,6 +47,16 @@ export function PreviewPanel() {
       const originalWidth = img.naturalWidth;
       const originalHeight = img.naturalHeight;
 
+      const preprocess = watermarkConfig.preprocess;
+      let preprocessedWidth = originalWidth;
+      let preprocessedHeight = originalHeight;
+
+      if (preprocess.resizeMode !== 'none') {
+        const { width, height } = computePreprocessedSize(originalWidth, originalHeight, preprocess);
+        preprocessedWidth = width;
+        preprocessedHeight = height;
+      }
+
       let displayWidth: number;
       let displayHeight: number;
       const containerWidth = container.clientWidth - 48;
@@ -54,22 +64,22 @@ export function PreviewPanel() {
 
       switch (zoomMode) {
         case 'actual':
-          displayWidth = originalWidth;
-          displayHeight = originalHeight;
+          displayWidth = preprocessedWidth;
+          displayHeight = preprocessedHeight;
           break;
         case 'fitWidth':
           displayWidth = containerWidth;
-          displayHeight = (originalHeight / originalWidth) * containerWidth;
+          displayHeight = (preprocessedHeight / preprocessedWidth) * containerWidth;
           break;
         case 'fitHeight':
           displayHeight = containerHeight;
-          displayWidth = (originalWidth / originalHeight) * containerHeight;
+          displayWidth = (preprocessedWidth / preprocessedHeight) * containerHeight;
           break;
         case 'fit':
         default: {
-          const scale = Math.min(containerWidth / originalWidth, containerHeight / originalHeight);
-          displayWidth = originalWidth * scale;
-          displayHeight = originalHeight * scale;
+          const scale = Math.min(containerWidth / preprocessedWidth, containerHeight / preprocessedHeight);
+          displayWidth = preprocessedWidth * scale;
+          displayHeight = preprocessedHeight * scale;
           break;
         }
       }
@@ -80,7 +90,38 @@ export function PreviewPanel() {
       canvas.width = scaledWidth;
       canvas.height = scaledHeight;
 
-      await renderWatermarkToCanvas(ctx, img, scaledWidth, scaledHeight, watermarkConfig);
+      let baseImg: HTMLImageElement = img;
+
+      if (preprocess.resizeMode !== 'none' || (preprocess.rotation !== 'none' && preprocess.rotation !== 'auto-exif')) {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = preprocessedWidth;
+        tempCanvas.height = preprocessedHeight;
+        const tempCtx = tempCanvas.getContext('2d')!;
+
+        tempCtx.save();
+        if (preprocess.rotation === '90') {
+          tempCtx.translate(preprocessedWidth, 0);
+          tempCtx.rotate(Math.PI / 2);
+        } else if (preprocess.rotation === '180') {
+          tempCtx.translate(preprocessedWidth, preprocessedHeight);
+          tempCtx.rotate(Math.PI);
+        } else if (preprocess.rotation === '270') {
+          tempCtx.translate(0, preprocessedHeight);
+          tempCtx.rotate((3 * Math.PI) / 2);
+        }
+        tempCtx.drawImage(img, 0, 0, originalWidth, originalHeight, 0, 0, preprocessedWidth, preprocessedHeight);
+        tempCtx.restore();
+
+        baseImg = document.createElement('img');
+        baseImg.crossOrigin = 'anonymous';
+        await new Promise<void>((resolve, reject) => {
+          baseImg.onload = () => resolve();
+          baseImg.onerror = () => reject(new Error('preprocessed image load failed'));
+          baseImg.src = tempCanvas.toDataURL();
+        });
+      }
+
+      await renderWatermarkToCanvas(ctx, baseImg, scaledWidth, scaledHeight, watermarkConfig);
     } catch (err) {
       console.error('Preview render error:', err);
     }
@@ -136,6 +177,10 @@ export function PreviewPanel() {
             <div className="text-sm text-gray-400">
               {selectedImage.name}
               <span className="text-gray-600 ml-2">({selectedImage.width} × {selectedImage.height})</span>
+              {watermarkConfig.preprocess.resizeMode !== 'none' && (() => {
+                const { width, height } = computePreprocessedSize(selectedImage.width, selectedImage.height, watermarkConfig.preprocess);
+                return <span style={{ color: '#00E5CC', marginLeft: 8 }}>→ {width} × {height}</span>;
+              })()}
             </div>
             <Space size={8}>
               <Button size="small" icon={<ZoomOut className="w-4 h-4" />} onClick={handleZoomOut} disabled={zoom <= 10} />

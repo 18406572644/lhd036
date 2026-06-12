@@ -2,7 +2,7 @@ import { Radio, Slider, Space, Typography, Button, Progress, message, Input } fr
 import { Download, Folder, Image as ImageIcon, CheckSquare, Square } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { electronApi } from '@/utils/electronApi';
-import { renderWatermarkToCanvas } from '@/utils/watermarkUtils';
+import { renderWatermarkToCanvas, computePreprocessedSize } from '@/utils/watermarkUtils';
 import { useState, useCallback } from 'react';
 import type { ExportConfig } from '@/types';
 
@@ -80,6 +80,8 @@ export default function ExportTab() {
         return;
       }
 
+      const preprocess = watermarkConfig.preprocess;
+
       let success = 0;
       let failed = 0;
 
@@ -94,8 +96,14 @@ export default function ExportTab() {
             img.src = item.url || item.path;
           });
 
-          const targetW = Math.max(1, img.naturalWidth);
-          const targetH = Math.max(1, img.naturalHeight);
+          let targetW = Math.max(1, img.naturalWidth);
+          let targetH = Math.max(1, img.naturalHeight);
+
+          if (preprocess.resizeMode !== 'none') {
+            const { width, height } = computePreprocessedSize(targetW, targetH, preprocess);
+            targetW = width;
+            targetH = height;
+          }
 
           if (targetW * targetH > MAX_CANVAS_PIXELS) {
             throw new Error('图片尺寸超过浏览器 Canvas 上限');
@@ -104,15 +112,65 @@ export default function ExportTab() {
           offscreen.width = targetW;
           offscreen.height = targetH;
 
-          await renderWatermarkToCanvas(ctx, img, targetW, targetH, watermarkConfig);
+          ctx.save();
+          if (preprocess.rotation === '90') {
+            ctx.translate(targetW, 0);
+            ctx.rotate(Math.PI / 2);
+          } else if (preprocess.rotation === '180') {
+            ctx.translate(targetW, targetH);
+            ctx.rotate(Math.PI);
+          } else if (preprocess.rotation === '270') {
+            ctx.translate(0, targetH);
+            ctx.rotate((3 * Math.PI) / 2);
+          }
+          ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, 0, 0, targetW, targetH);
+          ctx.restore();
 
-          const blob = await canvasToBlob(offscreen, exportConfig.format, exportConfig.quality);
-          if (!blob) throw new Error('导出失败');
+          const preprocessCanvas = document.createElement('canvas');
+          preprocessCanvas.width = targetW;
+          preprocessCanvas.height = targetH;
+          const preprocessCtx = preprocessCanvas.getContext('2d')!;
+          preprocessCtx.drawImage(offscreen, 0, 0);
 
-          const ext = exportConfig.format;
-          const baseName = item.name.replace(/\.[^.]+$/, '');
-          const filename = `${exportConfig.prefix}${baseName}${exportConfig.suffix}.${ext}`;
-          triggerDownload(blob, filename);
+          const preprocessedImg = document.createElement('img');
+          preprocessedImg.crossOrigin = 'anonymous';
+          await new Promise<void>((resolve, reject) => {
+            preprocessedImg.onload = () => resolve();
+            preprocessedImg.onerror = () => reject(new Error('预处理图片加载失败'));
+            preprocessedImg.src = preprocessCanvas.toDataURL();
+          });
+
+          await renderWatermarkToCanvas(ctx, preprocessedImg, targetW, targetH, watermarkConfig);
+
+          let exportQuality = exportConfig.quality;
+
+          if (preprocess.targetMaxSizeEnabled && preprocess.targetMaxSize > 0) {
+            const maxSizeBytes = preprocess.targetMaxSize * 1024 * 1024;
+            let blob = await canvasToBlob(offscreen, exportConfig.format, exportQuality);
+            if (blob && blob.size > maxSizeBytes && exportConfig.format !== 'png') {
+              for (let q = exportQuality - 10; q >= 10; q -= 10) {
+                blob = await canvasToBlob(offscreen, exportConfig.format, q);
+                if (blob && blob.size <= maxSizeBytes) {
+                  exportQuality = q;
+                  break;
+                }
+              }
+            }
+            if (blob) {
+              const ext = exportConfig.format;
+              const baseName = item.name.replace(/\.[^.]+$/, '');
+              const filename = `${exportConfig.prefix}${baseName}${exportConfig.suffix}.${ext}`;
+              triggerDownload(blob, filename);
+            }
+          } else {
+            const blob = await canvasToBlob(offscreen, exportConfig.format, exportQuality);
+            if (!blob) throw new Error('导出失败');
+
+            const ext = exportConfig.format;
+            const baseName = item.name.replace(/\.[^.]+$/, '');
+            const filename = `${exportConfig.prefix}${baseName}${exportConfig.suffix}.${ext}`;
+            triggerDownload(blob, filename);
+          }
 
           success++;
           const percent = Math.round(((i + 1) / total) * 100);

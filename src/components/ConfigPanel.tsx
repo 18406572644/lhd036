@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import { Tabs } from 'antd';
-import { Type, Image, Move, Download } from 'lucide-react';
+import { Type, Image, Move, Download, Grid3x3, Settings2 } from 'lucide-react';
 import TextWatermarkTab from './TextWatermarkTab';
 import ImageWatermarkTab from './ImageWatermarkTab';
 import PositionTab from './PositionTab';
+import TileTab from './TileTab';
+import PreprocessTab from './PreprocessTab';
 import ExportTab from './ExportTab';
 import { useAppStore } from '@/store/useAppStore';
 
 export default function ConfigPanel() {
-  const watermarkConfig = useAppStore((state) => state.watermarkConfig);
   const updateWatermarkConfig = useAppStore((state) => state.updateWatermarkConfig);
   const [activeKey, setActiveKey] = useState('text');
 
@@ -38,17 +39,37 @@ export default function ConfigPanel() {
       label: (
         <span style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
           <Move size={14} />
-          位置设置
+          位置
         </span>
       ),
       children: <PositionTab />,
+    },
+    {
+      key: 'tile',
+      label: (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+          <Grid3x3 size={14} />
+          平铺
+        </span>
+      ),
+      children: <TileTab />,
+    },
+    {
+      key: 'preprocess',
+      label: (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+          <Settings2 size={14} />
+          预处理
+        </span>
+      ),
+      children: <PreprocessTab />,
     },
     {
       key: 'export',
       label: (
         <span style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
           <Download size={14} />
-          导出设置
+          导出
         </span>
       ),
       children: <ExportTab />,
@@ -87,7 +108,7 @@ export default function ConfigPanel() {
           flexDirection: 'column',
         }}
         tabBarStyle={{
-          padding: '0 16px',
+          padding: '0 12px',
           margin: '12px 0 0 0',
         }}
       />

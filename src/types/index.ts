@@ -8,7 +8,31 @@ export type WatermarkPositionPreset =
   | 'bottom-left'
   | 'bottom-center'
   | 'bottom-right'
-  | 'custom';
+  | 'custom'
+  | 'tile';
+
+export interface TileConfig {
+  enabled: boolean;
+  horizontalSpacing: number;
+  verticalSpacing: number;
+  staggered: boolean;
+  offsetX: number;
+  offsetY: number;
+}
+
+export type ResizeMode = 'none' | 'fixed-width' | 'fixed-height' | 'max-side' | 'percent';
+export type RotationPreset = 'none' | '90' | '180' | '270' | 'auto-exif';
+
+export interface PreprocessConfig {
+  resizeMode: ResizeMode;
+  fixedWidth: number;
+  fixedHeight: number;
+  maxSide: number;
+  scalePercent: number;
+  rotation: RotationPreset;
+  targetMaxSize: number;
+  targetMaxSizeEnabled: boolean;
+}
 
 export interface Position {
   x: number;
@@ -49,6 +73,8 @@ export interface WatermarkConfig {
   margin: number;
   text: TextWatermarkConfig;
   image: ImageWatermarkConfig;
+  tile: TileConfig;
+  preprocess: PreprocessConfig;
 }
 
 export interface WatermarkTemplate {

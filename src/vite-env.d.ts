@@ -22,6 +22,29 @@ interface ImageWatermarkConfig {
   rotation: number;
 }
 
+interface TileConfig {
+  enabled: boolean;
+  horizontalSpacing: number;
+  verticalSpacing: number;
+  staggered: boolean;
+  offsetX: number;
+  offsetY: number;
+}
+
+type ResizeMode = 'none' | 'fixed-width' | 'fixed-height' | 'max-side' | 'percent';
+type RotationPreset = 'none' | '90' | '180' | '270' | 'auto-exif';
+
+interface PreprocessConfig {
+  resizeMode: ResizeMode;
+  fixedWidth: number;
+  fixedHeight: number;
+  maxSide: number;
+  scalePercent: number;
+  rotation: RotationPreset;
+  targetMaxSize: number;
+  targetMaxSizeEnabled: boolean;
+}
+
 interface WatermarkConfig {
   type: 'text' | 'image';
   position:
@@ -34,11 +57,14 @@ interface WatermarkConfig {
     | 'bottom-left'
     | 'bottom-center'
     | 'bottom-right'
-    | 'custom';
+    | 'custom'
+    | 'tile';
   positionValue: Position;
   margin: number;
   text: TextWatermarkConfig;
   image: ImageWatermarkConfig;
+  tile: TileConfig;
+  preprocess: PreprocessConfig;
 }
 
 interface ExportConfig {

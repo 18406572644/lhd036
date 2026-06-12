@@ -36,8 +36,8 @@ export default function Home() {
 
   const handleExport = () => {
     const tabs = document.querySelectorAll('.ant-tabs-tab');
-    if (tabs.length >= 4) {
-      (tabs[3] as HTMLElement).click();
+    if (tabs.length >= 6) {
+      (tabs[5] as HTMLElement).click();
     }
   };
 

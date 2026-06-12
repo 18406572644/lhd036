@@ -1,5 +1,5 @@
 import { Slider, Space, Typography, InputNumber, Button } from 'antd';
-import { Move, Maximize2 } from 'lucide-react';
+import { Move, Maximize2, Grid3x3 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import type { WatermarkPositionPreset } from '@/types';
 
@@ -29,6 +29,7 @@ export default function PositionTab() {
   const updatePosition = useAppStore((state) => state.updatePosition);
 
   const isCustom = watermarkConfig.position === 'custom';
+  const isTile = watermarkConfig.position === 'tile';
 
   const handlePositionSelect = (position: WatermarkPositionPreset) => {
     updateWatermarkConfig({ position });
@@ -88,6 +89,20 @@ export default function PositionTab() {
         >
           自定义坐标
         </Button>
+        <Button
+          onClick={() => handlePositionSelect('tile')}
+          block
+          icon={<Grid3x3 size={14} />}
+          style={{
+            marginTop: 8,
+            backgroundColor: isTile ? '#00E5CC' : '#2A2A3E',
+            borderColor: isTile ? '#00E5CC' : '#2A2A3E',
+            color: isTile ? '#0A0A0A' : 'rgba(255, 255, 255, 0.85)',
+            boxShadow: isTile ? '0 0 12px rgba(0, 229, 204, 0.5)' : 'none',
+          }}
+        >
+          平铺铺满
+        </Button>
       </div>
 
       <div>
@@ -103,7 +118,7 @@ export default function PositionTab() {
           max={100}
           value={watermarkConfig.margin}
           onChange={(value) => updateWatermarkConfig({ margin: value })}
-          disabled={isCustom}
+          disabled={isCustom || isTile}
         />
       </div>
 
