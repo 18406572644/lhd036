@@ -97,9 +97,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     failed: 0,
   },
 
-  addImages: (images) =>
+  addImages: (newImages) =>
     set((state) => ({
-      images: [...state.images, ...images],
+      images: [...state.images, ...newImages],
     })),
 
   removeImage: (id) =>

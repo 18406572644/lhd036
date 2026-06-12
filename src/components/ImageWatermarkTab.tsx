@@ -25,15 +25,15 @@ export default function ImageWatermarkTab() {
       const reader = new FileReader();
       reader.onload = (event) => {
         const dataUrl = event.target?.result as string;
-        const img = new Image();
-        img.onload = () => {
+        const imgEl = document.createElement('img');
+        imgEl.onload = () => {
           updateImageConfig({
             imageUrl: dataUrl,
-            width: img.width,
-            height: img.height,
+            width: imgEl.naturalWidth,
+            height: imgEl.naturalHeight,
           });
         };
-        img.src = dataUrl;
+        imgEl.src = dataUrl;
       };
       reader.readAsDataURL(file);
     }

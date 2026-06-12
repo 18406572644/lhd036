@@ -2,13 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import { Button, Slider, Space, Empty } from 'antd';
 import { ZoomIn, ZoomOut, Maximize, Minimize, RotateCcw, Image as ImageIcon } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
-import {
-  calculatePosition,
-  calculateRotatedBoundingBox,
-  generateTextWatermarkSVG,
-  getTextWatermarkSize,
-  getAdaptiveScale,
-} from '@/utils/watermarkUtils';
+import { renderWatermarkToCanvas } from '@/utils/watermarkUtils';
 import { electronApi } from '@/utils/electronApi';
 
 type ZoomMode = 'fit' | 'fitWidth' | 'fitHeight' | 'actual';
@@ -29,7 +23,6 @@ export function PreviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [zoomMode, setZoomMode] = useState<ZoomMode>('fit');
   const [zoom, setZoom] = useState(100);
-  const [, setImageLoaded] = useState<HTMLImageElement | null>(null);
 
   const { images, selectedImageId, watermarkConfig } = useAppStore();
   const selectedImage = images.find((img) => img.id === selectedImageId);
@@ -42,13 +35,17 @@ export function PreviewPanel() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const img = new window.Image();
-    img.crossOrigin = 'anonymous';
+    try {
+      const img = document.createElement('img');
+      img.crossOrigin = 'anonymous';
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('image load failed'));
+        img.src = pathToUrl(selectedImage.path);
+      });
 
-    img.onload = () => {
-      setImageLoaded(img);
-      const originalWidth = img.width;
-      const originalHeight = img.height;
+      const originalWidth = img.naturalWidth;
+      const originalHeight = img.naturalHeight;
 
       let displayWidth: number;
       let displayHeight: number;
@@ -77,113 +74,28 @@ export function PreviewPanel() {
         }
       }
 
-      const scaledWidth = displayWidth * (zoom / 100);
-      const scaledHeight = displayHeight * (zoom / 100);
+      const scaledWidth = Math.max(1, Math.round(displayWidth * (zoom / 100)));
+      const scaledHeight = Math.max(1, Math.round(displayHeight * (zoom / 100)));
 
       canvas.width = scaledWidth;
       canvas.height = scaledHeight;
 
-      ctx.clearRect(0, 0, scaledWidth, scaledHeight);
-      ctx.drawImage(img, 0, 0, scaledWidth, scaledHeight);
-
-      const scaleFactor = scaledWidth / originalWidth;
-      const adaptiveScale = getAdaptiveScale(originalWidth);
-
-      if (watermarkConfig.type === 'text') {
-        const textCfg = watermarkConfig.text;
-        if (!textCfg.text || !textCfg.text.trim()) return;
-
-        const effectiveFontSize = Math.max(8, Math.round(textCfg.fontSize * adaptiveScale));
-
-        const adaptiveTextCfg = {
-          ...textCfg,
-          fontSize: effectiveFontSize,
-        };
-
-        const { bboxWidth: origBboxW, bboxHeight: origBboxH } = getTextWatermarkSize(adaptiveTextCfg);
-        const dispBboxW = origBboxW * scaleFactor;
-        const dispBboxH = origBboxH * scaleFactor;
-        const dispMargin = watermarkConfig.margin * adaptiveScale * scaleFactor;
-
-        const position = calculatePosition(
-          watermarkConfig.position,
-          scaledWidth,
-          scaledHeight,
-          dispBboxW,
-          dispBboxH,
-          dispMargin,
-          {
-            x: watermarkConfig.positionValue.x * adaptiveScale * scaleFactor,
-            y: watermarkConfig.positionValue.y * adaptiveScale * scaleFactor,
-          }
-        );
-
-        const svg = generateTextWatermarkSVG(adaptiveTextCfg);
-        const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-        const url = URL.createObjectURL(svgBlob);
-
-        const watermarkImg = new window.Image();
-        watermarkImg.onload = () => {
-          ctx.save();
-          ctx.drawImage(watermarkImg, position.x, position.y, dispBboxW, dispBboxH);
-          ctx.restore();
-          URL.revokeObjectURL(url);
-        };
-        watermarkImg.onerror = () => {
-          URL.revokeObjectURL(url);
-        };
-        watermarkImg.src = url;
-      } else if (watermarkConfig.type === 'image' && watermarkConfig.image.imageUrl) {
-        const imgCfg = watermarkConfig.image;
-        const origWmW = Math.max(4, imgCfg.width * adaptiveScale);
-        const origWmH = Math.max(4, imgCfg.height * adaptiveScale);
-
-        const dispWmW = origWmW * scaleFactor;
-        const dispWmH = origWmH * scaleFactor;
-        const dispMargin = watermarkConfig.margin * adaptiveScale * scaleFactor;
-
-        const bbox = imgCfg.rotation !== 0
-          ? calculateRotatedBoundingBox(dispWmW, dispWmH, imgCfg.rotation)
-          : { width: dispWmW, height: dispWmH };
-
-        const position = calculatePosition(
-          watermarkConfig.position,
-          scaledWidth,
-          scaledHeight,
-          bbox.width,
-          bbox.height,
-          dispMargin,
-          {
-            x: watermarkConfig.positionValue.x * adaptiveScale * scaleFactor,
-            y: watermarkConfig.positionValue.y * adaptiveScale * scaleFactor,
-          }
-        );
-
-        const centerX = position.x + bbox.width / 2;
-        const centerY = position.y + bbox.height / 2;
-
-        const watermarkImg = new window.Image();
-        watermarkImg.crossOrigin = 'anonymous';
-
-        watermarkImg.onload = () => {
-          ctx.save();
-          ctx.translate(centerX, centerY);
-          ctx.rotate((imgCfg.rotation * Math.PI) / 180);
-          ctx.globalAlpha = imgCfg.opacity;
-          ctx.drawImage(watermarkImg, -dispWmW / 2, -dispWmH / 2, dispWmW, dispWmH);
-          ctx.restore();
-        };
-        watermarkImg.src = imgCfg.imageUrl;
-      }
-    };
-
-    img.src = pathToUrl(selectedImage.path);
+      await renderWatermarkToCanvas(ctx, img, scaledWidth, scaledHeight, watermarkConfig);
+    } catch (err) {
+      console.error('Preview render error:', err);
+    }
   }, [selectedImage, watermarkConfig, zoomMode, zoom]);
 
   useEffect(() => {
+    let cancelled = false;
     if (selectedImage) {
-      renderWatermark();
+      (async () => {
+        if (!cancelled) await renderWatermark();
+      })();
     }
+    return () => {
+      cancelled = true;
+    };
   }, [renderWatermark, selectedImage]);
 
   useEffect(() => {

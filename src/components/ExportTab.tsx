@@ -2,117 +2,13 @@ import { Radio, Slider, Space, Typography, Button, Progress, message, Input } fr
 import { Download, Folder, Image as ImageIcon, CheckSquare, Square } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { electronApi } from '@/utils/electronApi';
-import {
-  generateTextWatermarkSVG,
-  getTextWatermarkSize,
-  calculatePosition,
-  getAdaptiveScale,
-  calculateRotatedBoundingBox,
-} from '@/utils/watermarkUtils';
+import { renderWatermarkToCanvas } from '@/utils/watermarkUtils';
 import { useState, useCallback } from 'react';
 import type { ExportConfig } from '@/types';
 
 const { Text } = Typography;
 
 type ExportScope = 'all' | 'selected';
-
-function drawWatermarkOnCanvas(
-  ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement,
-  watermarkConfig: ReturnType<typeof useAppStore.getState>['watermarkConfig'],
-  targetW: number,
-  targetH: number
-): Promise<void> {
-  return new Promise((resolve) => {
-    ctx.clearRect(0, 0, targetW, targetH);
-    ctx.drawImage(img, 0, 0, targetW, targetH);
-
-    const adaptiveScale = getAdaptiveScale(img.width);
-
-    if (watermarkConfig.type === 'text') {
-      const textCfg = watermarkConfig.text;
-      if (!textCfg.text || !textCfg.text.trim()) {
-        resolve();
-        return;
-      }
-
-      const adaptiveTextCfg = {
-        ...textCfg,
-        fontSize: Math.max(8, Math.round(textCfg.fontSize * adaptiveScale)),
-      };
-
-      const { bboxWidth, bboxHeight } = getTextWatermarkSize(adaptiveTextCfg);
-      const position = calculatePosition(
-        watermarkConfig.position,
-        targetW,
-        targetH,
-        bboxWidth,
-        bboxHeight,
-        watermarkConfig.margin * adaptiveScale,
-        {
-          x: watermarkConfig.positionValue.x * adaptiveScale,
-          y: watermarkConfig.positionValue.y * adaptiveScale,
-        }
-      );
-
-      const svg = generateTextWatermarkSVG(adaptiveTextCfg);
-      const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(svgBlob);
-      const wmImg = document.createElement('img');
-      wmImg.onload = () => {
-        ctx.drawImage(wmImg, position.x, position.y, bboxWidth, bboxHeight);
-        URL.revokeObjectURL(url);
-        resolve();
-      };
-      wmImg.onerror = () => {
-        URL.revokeObjectURL(url);
-        resolve();
-      };
-      wmImg.src = url;
-    } else if (watermarkConfig.type === 'image' && watermarkConfig.image.imageUrl) {
-      const imgCfg = watermarkConfig.image;
-      const adaptiveW = Math.max(4, imgCfg.width * adaptiveScale);
-      const adaptiveH = Math.max(4, imgCfg.height * adaptiveScale);
-
-      const wmImg = document.createElement('img');
-      wmImg.crossOrigin = 'anonymous';
-      wmImg.onload = () => {
-        const bbox =
-          imgCfg.rotation !== 0
-            ? calculateRotatedBoundingBox(adaptiveW, adaptiveH, imgCfg.rotation)
-            : { width: adaptiveW, height: adaptiveH };
-
-        const position = calculatePosition(
-          watermarkConfig.position,
-          targetW,
-          targetH,
-          bbox.width,
-          bbox.height,
-          watermarkConfig.margin * adaptiveScale,
-          {
-            x: watermarkConfig.positionValue.x * adaptiveScale,
-            y: watermarkConfig.positionValue.y * adaptiveScale,
-          }
-        );
-
-        const cx = position.x + bbox.width / 2;
-        const cy = position.y + bbox.height / 2;
-
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate((imgCfg.rotation * Math.PI) / 180);
-        ctx.globalAlpha = imgCfg.opacity;
-        ctx.drawImage(wmImg, -adaptiveW / 2, -adaptiveH / 2, adaptiveW, adaptiveH);
-        ctx.restore();
-        resolve();
-      };
-      wmImg.onerror = () => resolve();
-      wmImg.src = imgCfg.imageUrl;
-    } else {
-      resolve();
-    }
-  });
-}
 
 function canvasToBlob(canvas: HTMLCanvasElement, format: string, quality: number): Promise<Blob | null> {
   return new Promise((resolve) => {
@@ -131,8 +27,10 @@ function triggerDownload(blob: Blob, filename: string) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
+
+const MAX_CANVAS_PIXELS = 16384 * 16384;
 
 export default function ExportTab() {
   const exportConfig = useAppStore((state) => state.exportConfig);
@@ -196,12 +94,17 @@ export default function ExportTab() {
             img.src = item.url || item.path;
           });
 
-          const targetW = img.naturalWidth;
-          const targetH = img.naturalHeight;
+          const targetW = Math.max(1, img.naturalWidth);
+          const targetH = Math.max(1, img.naturalHeight);
+
+          if (targetW * targetH > MAX_CANVAS_PIXELS) {
+            throw new Error('图片尺寸超过浏览器 Canvas 上限');
+          }
+
           offscreen.width = targetW;
           offscreen.height = targetH;
 
-          await drawWatermarkOnCanvas(ctx, img, watermarkConfig, targetW, targetH);
+          await renderWatermarkToCanvas(ctx, img, targetW, targetH, watermarkConfig);
 
           const blob = await canvasToBlob(offscreen, exportConfig.format, exportConfig.quality);
           if (!blob) throw new Error('导出失败');

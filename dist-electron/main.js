@@ -150,6 +150,50 @@ electron_1.ipcMain.handle('get-thumbnail', async (_event, imagePath, size = 200)
         throw error;
     }
 });
+const BASE_IMAGE_WIDTH = 1000;
+function getAdaptiveScale(imageWidth) {
+    return imageWidth / BASE_IMAGE_WIDTH;
+}
+function hexToRgbValues(hex) {
+    let cleanHex = hex.replace('#', '');
+    if (cleanHex.length === 3) {
+        cleanHex = cleanHex
+            .split('')
+            .map((c) => c + c)
+            .join('');
+    }
+    if (cleanHex.length !== 6) {
+        cleanHex = 'ffffff';
+    }
+    return {
+        r: parseInt(cleanHex.substring(0, 2), 16),
+        g: parseInt(cleanHex.substring(2, 4), 16),
+        b: parseInt(cleanHex.substring(4, 6), 16),
+    };
+}
+function calculateRotatedBoundingBox(width, height, rotation) {
+    const radians = (rotation * Math.PI) / 180;
+    const rotatedWidth = Math.abs(width * Math.cos(radians)) + Math.abs(height * Math.sin(radians));
+    const rotatedHeight = Math.abs(width * Math.sin(radians)) + Math.abs(height * Math.cos(radians));
+    return { width: rotatedWidth, height: rotatedHeight };
+}
+function measureTextSharp(text, fontFamily, fontSize) {
+    const avgGlyphWidth = fontSize * 0.55;
+    const cjkWeight = fontSize * 1.0;
+    let width = 0;
+    for (const ch of text) {
+        const code = ch.charCodeAt(0);
+        if (code > 0x2E80) {
+            width += cjkWeight;
+        }
+        else {
+            width += avgGlyphWidth;
+        }
+    }
+    width = Math.max(width, fontSize * 0.5);
+    const height = Math.ceil(fontSize * 1.3);
+    return { width: Math.ceil(width), height };
+}
 function calculatePosition(preset, imageWidth, imageHeight, watermarkWidth, watermarkHeight, margin, customPos) {
     switch (preset) {
         case 'top-left':
@@ -183,105 +227,152 @@ function calculatePosition(preset, imageWidth, imageHeight, watermarkWidth, wate
                 left: imageWidth - watermarkWidth - margin,
             };
         case 'custom':
-            return customPos ? { top: customPos.y, left: customPos.x } : { top: 0, left: 0 };
+            return customPos ? { top: Math.round(customPos.y), left: Math.round(customPos.x) } : { top: 0, left: 0 };
         default:
             return { top: margin, left: margin };
     }
 }
-async function createTextWatermarkSvg(text, fontFamily, fontSize, color, opacity, rotation, width, height) {
-    const radians = (rotation * Math.PI) / 180;
-    const rotatedWidth = Math.abs(width * Math.cos(radians)) + Math.abs(height * Math.sin(radians));
-    const rotatedHeight = Math.abs(width * Math.sin(radians)) + Math.abs(height * Math.cos(radians));
-    const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${rotatedWidth}" height="${rotatedHeight}">
-      <text
-        x="50%"
-        y="50%"
-        text-anchor="middle"
-        dominant-baseline="middle"
-        font-family="${fontFamily}"
-        font-size="${fontSize}px"
-        fill="${color}"
-        opacity="${opacity}"
-        transform="rotate(${rotation} ${rotatedWidth / 2} ${rotatedHeight / 2})"
-      >${text}</text>
-    </svg>
-  `;
-    return Buffer.from(svg);
+function createTextWatermarkOverlay(text, fontFamily, fontSize, color, opacity, rotation, imageWidth, imageHeight, margin, customPx, customPy, position) {
+    const { width: textW, height: textH } = measureTextSharp(text, fontFamily, fontSize);
+    const bbox = calculateRotatedBoundingBox(textW, textH, rotation);
+    const bboxW = Math.ceil(bbox.width);
+    const bboxH = Math.ceil(bbox.height);
+    const pos = calculatePosition(position, imageWidth, imageHeight, bboxW, bboxH, margin, {
+        x: customPx,
+        y: customPy,
+    });
+    const cx = pos.left + bboxW / 2;
+    const cy = pos.top + bboxH / 2;
+    const { r, g, b } = hexToRgbValues(color);
+    const safeOpacity = Math.max(0, Math.min(1, opacity));
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidth}" height="${imageHeight}">
+  <text
+    x="${cx}"
+    y="${cy}"
+    font-family="${fontFamily}"
+    font-size="${fontSize}"
+    fill="rgb(${r}, ${g}, ${b})"
+    fill-opacity="${safeOpacity}"
+    text-anchor="middle"
+    dominant-baseline="central"
+    transform="rotate(${rotation} ${cx} ${cy})"
+  >${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</text>
+</svg>`;
+    return Buffer.from(svg.trim());
 }
 async function processImage(inputPath, outputPath, config, watermark) {
-    let pipeline = (0, sharp_1.default)(inputPath);
-    const metadata = await pipeline.metadata();
+    const src = (0, sharp_1.default)(inputPath);
+    const metadata = await src.metadata();
     const imageWidth = metadata.width || 0;
     const imageHeight = metadata.height || 0;
+    const adaptiveScale = getAdaptiveScale(imageWidth);
     const composites = [];
     if (watermark.type === 'text') {
         const textConfig = watermark.text;
-        const estimatedWidth = textConfig.text.length * textConfig.fontSize * 0.6;
-        const estimatedHeight = textConfig.fontSize * 1.2;
-        const svgBuffer = await createTextWatermarkSvg(textConfig.text, textConfig.fontFamily, textConfig.fontSize, textConfig.color, textConfig.opacity, textConfig.rotation, estimatedWidth, estimatedHeight);
-        const svgMetadata = await (0, sharp_1.default)(svgBuffer).metadata();
-        const svgWidth = svgMetadata.width || estimatedWidth;
-        const svgHeight = svgMetadata.height || estimatedHeight;
-        const position = calculatePosition(watermark.position, imageWidth, imageHeight, svgWidth, svgHeight, watermark.margin, watermark.positionValue);
-        composites.push({
-            input: svgBuffer,
-            left: position.left,
-            top: position.top,
-        });
+        if (textConfig.text && textConfig.text.trim()) {
+            const effectiveFontSize = Math.max(8, Math.round(textConfig.fontSize * adaptiveScale));
+            const dispMargin = Math.round(watermark.margin * adaptiveScale);
+            const customPx = Math.round(watermark.positionValue.x * adaptiveScale);
+            const customPy = Math.round(watermark.positionValue.y * adaptiveScale);
+            const svgBuffer = createTextWatermarkOverlay(textConfig.text, textConfig.fontFamily, effectiveFontSize, textConfig.color, textConfig.opacity, textConfig.rotation, imageWidth, imageHeight, dispMargin, customPx, customPy, watermark.position);
+            composites.push({
+                input: svgBuffer,
+                left: 0,
+                top: 0,
+            });
+        }
     }
     else if (watermark.type === 'image' && watermark.image.imageUrl) {
         const imageConfig = watermark.image;
-        let wmPath = imageConfig.imageUrl;
-        if (wmPath.startsWith('data:image')) {
-            const base64Data = wmPath.replace(/^data:image\/\w+;base64,/, '');
-            const tempPath = path.join(electron_1.app.getPath('temp'), `wm_${Date.now()}.png`);
-            fs.writeFileSync(tempPath, Buffer.from(base64Data, 'base64'));
-            wmPath = tempPath;
-        }
-        let watermarkBuffer = await (0, sharp_1.default)(wmPath)
-            .resize(imageConfig.width, imageConfig.height, { fit: 'contain' })
-            .toBuffer();
-        if (imageConfig.opacity < 1) {
-            watermarkBuffer = await (0, sharp_1.default)(watermarkBuffer)
-                .ensureAlpha()
-                .composite([
-                {
-                    input: Buffer.from([0, 0, 0, Math.round(255 * imageConfig.opacity)]),
-                    raw: { width: 1, height: 1, channels: 4 },
-                    tile: true,
-                    blend: 'in',
+        let wmSrc = imageConfig.imageUrl;
+        const tempFiles = [];
+        try {
+            if (wmSrc.startsWith('data:image')) {
+                const commaIdx = wmSrc.indexOf(',');
+                const base64Data = commaIdx >= 0 ? wmSrc.substring(commaIdx + 1) : '';
+                const tempPath = path.join(electron_1.app.getPath('temp'), `wm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`);
+                fs.writeFileSync(tempPath, Buffer.from(base64Data, 'base64'));
+                wmSrc = tempPath;
+                tempFiles.push(tempPath);
+            }
+            const targetWmW = Math.max(4, Math.round(imageConfig.width * adaptiveScale));
+            const targetWmH = Math.max(4, Math.round(imageConfig.height * adaptiveScale));
+            let wmPipeline = (0, sharp_1.default)(wmSrc)
+                .resize(targetWmW, targetWmH, { fit: 'fill', kernel: 'lanczos3' });
+            wmPipeline = wmPipeline.png();
+            let wmBuf = await wmPipeline.toBuffer();
+            if (imageConfig.opacity < 1) {
+                const alphaVal = Math.max(0, Math.min(255, Math.round(255 * imageConfig.opacity)));
+                wmBuf = await (0, sharp_1.default)(wmBuf)
+                    .ensureAlpha()
+                    .composite([
+                    {
+                        input: Buffer.from([0, 0, 0, alphaVal]),
+                        raw: { width: 1, height: 1, channels: 4 },
+                        tile: true,
+                        blend: 'in',
+                    },
+                ])
+                    .png()
+                    .toBuffer();
+            }
+            if (imageConfig.rotation !== 0) {
+                wmBuf = await (0, sharp_1.default)(wmBuf)
+                    .rotate(imageConfig.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                    .png()
+                    .toBuffer();
+            }
+            const wmMeta = await (0, sharp_1.default)(wmBuf).metadata();
+            const bboxW = wmMeta.width || targetWmW;
+            const bboxH = wmMeta.height || targetWmH;
+            const dispMargin = Math.round(watermark.margin * adaptiveScale);
+            const customPx = Math.round(watermark.positionValue.x * adaptiveScale);
+            const customPy = Math.round(watermark.positionValue.y * adaptiveScale);
+            const pos = calculatePosition(watermark.position, imageWidth, imageHeight, bboxW, bboxH, dispMargin, { x: customPx, y: customPy });
+            const overlayBuf = await (0, sharp_1.default)({
+                create: {
+                    width: imageWidth,
+                    height: imageHeight,
+                    channels: 4,
+                    background: { r: 0, g: 0, b: 0, alpha: 0 },
                 },
-            ])
+            })
+                .composite([{ input: wmBuf, left: pos.left, top: pos.top }])
+                .png()
                 .toBuffer();
+            composites.push({
+                input: overlayBuf,
+                left: 0,
+                top: 0,
+            });
         }
-        if (imageConfig.rotation !== 0) {
-            watermarkBuffer = await (0, sharp_1.default)(watermarkBuffer)
-                .rotate(imageConfig.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-                .toBuffer();
+        finally {
+            for (const f of tempFiles) {
+                try {
+                    fs.unlinkSync(f);
+                }
+                catch (_err) {
+                    // ignore
+                }
+            }
         }
-        const wmMetadata = await (0, sharp_1.default)(watermarkBuffer).metadata();
-        const wmWidth = wmMetadata.width || imageConfig.width;
-        const wmHeight = wmMetadata.height || imageConfig.height;
-        const position = calculatePosition(watermark.position, imageWidth, imageHeight, wmWidth, wmHeight, watermark.margin, watermark.positionValue);
-        composites.push({
-            input: watermarkBuffer,
-            left: position.left,
-            top: position.top,
-        });
     }
+    let pipeline = (0, sharp_1.default)(inputPath);
     if (composites.length > 0) {
         pipeline = pipeline.composite(composites);
     }
     switch (config.format) {
         case 'jpeg':
-            pipeline = pipeline.jpeg({ quality: config.quality });
+            pipeline = pipeline.flatten({ background: { r: 255, g: 255, b: 255 } }).jpeg({
+                quality: config.quality,
+                mozjpeg: true,
+            });
             break;
         case 'png':
             pipeline = pipeline.png({ compressionLevel: 9 });
             break;
         case 'webp':
-            pipeline = pipeline.webp({ quality: config.quality });
+            pipeline = pipeline.webp({ quality: config.quality, effort: 4 });
             break;
     }
     await pipeline.toFile(outputPath);
@@ -307,6 +398,7 @@ electron_1.ipcMain.handle('export-images', async (event, config, items, watermar
         }
         catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('export error:', item.name, errorMessage);
             results.push({ success: false, error: errorMessage });
             event.sender.send('export-progress', {
                 current: i + 1,
