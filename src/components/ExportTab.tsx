@@ -1,10 +1,11 @@
-import { Radio, Slider, Space, Typography, Button, Progress, message, Input } from 'antd';
+import { Radio, Slider, Space, Typography, Button, Progress, message, Input, Modal, Alert, Tag } from 'antd';
 import { Download, Folder, Image as ImageIcon, CheckSquare, Square } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { electronApi } from '@/utils/electronApi';
 import { renderWatermarkToCanvas, computePreprocessedSize } from '@/utils/watermarkUtils';
+import { generateRenamePreview, resolveConflicts } from '@/utils/renameEngine';
 import { useState, useCallback } from 'react';
-import type { ExportConfig } from '@/types';
+import type { ExportConfig, ImageInfo } from '@/types';
 
 const { Text } = Typography;
 
@@ -32,8 +33,28 @@ function triggerDownload(blob: Blob, filename: string) {
 
 const MAX_CANVAS_PIXELS = 16384 * 16384;
 
+function computeExportFilenames(
+  items: ImageInfo[],
+  renameConfig: ReturnType<typeof useAppStore.getState>['renameConfig'],
+  format: string
+): Map<string, string> {
+  const result = new Map<string, string>();
+  let preview = generateRenamePreview(items, renameConfig, format);
+
+  if (renameConfig.autoResolveConflict && preview.some((p) => p.hasConflict)) {
+    preview = resolveConflicts(preview);
+  }
+
+  for (const p of preview) {
+    result.set(p.id, p.newName);
+  }
+
+  return result;
+}
+
 export default function ExportTab() {
   const exportConfig = useAppStore((state) => state.exportConfig);
+  const renameConfig = useAppStore((state) => state.renameConfig);
   const updateExportConfig = useAppStore((state) => state.updateExportConfig);
   const beginExport = useAppStore((state) => state.beginExport);
   const setExportProgress = useAppStore((state) => state.setExportProgress);
@@ -71,6 +92,8 @@ export default function ExportTab() {
     async (exportItems: typeof images) => {
       const total = exportItems.length;
       beginExport(total);
+
+      const filenameMap = computeExportFilenames(exportItems, renameConfig, exportConfig.format);
 
       const offscreen = document.createElement('canvas');
       const ctx = offscreen.getContext('2d');
@@ -143,6 +166,7 @@ export default function ExportTab() {
           await renderWatermarkToCanvas(ctx, preprocessedImg, targetW, targetH, watermarkConfig);
 
           let exportQuality = exportConfig.quality;
+          const filename = filenameMap.get(item.id) || item.name;
 
           if (preprocess.targetMaxSizeEnabled && preprocess.targetMaxSize > 0) {
             const maxSizeBytes = preprocess.targetMaxSize * 1024 * 1024;
@@ -157,18 +181,11 @@ export default function ExportTab() {
               }
             }
             if (blob) {
-              const ext = exportConfig.format;
-              const baseName = item.name.replace(/\.[^.]+$/, '');
-              const filename = `${exportConfig.prefix}${baseName}${exportConfig.suffix}.${ext}`;
               triggerDownload(blob, filename);
             }
           } else {
             const blob = await canvasToBlob(offscreen, exportConfig.format, exportQuality);
             if (!blob) throw new Error('导出失败');
-
-            const ext = exportConfig.format;
-            const baseName = item.name.replace(/\.[^.]+$/, '');
-            const filename = `${exportConfig.prefix}${baseName}${exportConfig.suffix}.${ext}`;
             triggerDownload(blob, filename);
           }
 
@@ -177,7 +194,7 @@ export default function ExportTab() {
           setExportProgress(percent);
           updateExportProgressDetail({
             accumulative: true,
-            currentFile: item.name,
+            currentFile: filename,
             completed: i + 1,
             total,
             success: 1,
@@ -209,6 +226,7 @@ export default function ExportTab() {
     [
       watermarkConfig,
       exportConfig,
+      renameConfig,
       beginExport,
       setExportProgress,
       updateExportProgressDetail,
@@ -224,13 +242,36 @@ export default function ExportTab() {
       return;
     }
 
+    const filenameMap = computeExportFilenames(exportItems, renameConfig, exportConfig.format);
+
     if (electronApi.isElectron) {
       if (!exportConfig.outputDir) {
         message.warning('请先选择输出目录');
         return;
       }
 
-      const items = exportItems.map((img) => ({ path: img.path, name: img.name }));
+      const hasUnresolvedConflicts = Array.from(filenameMap.values()).some(
+        (n, _i, arr) => arr.filter((x) => x === n).length > 1
+      );
+      if (hasUnresolvedConflicts && !renameConfig.autoResolveConflict) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          Modal.confirm({
+            title: '命名冲突',
+            content: '检测到重命名后存在文件名冲突，是否仍要继续导出？',
+            okText: '继续',
+            cancelText: '取消',
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+          });
+        });
+        if (!confirmed) return;
+      }
+
+      const items = exportItems.map((img) => ({
+        path: img.path,
+        name: img.name,
+        outputName: filenameMap.get(img.id) || img.name,
+      }));
       const total = items.length;
       beginExport(total);
       try {
@@ -353,31 +394,46 @@ export default function ExportTab() {
         <Space align="center" style={{ marginBottom: 12 }}>
           <Square size={16} color="#00E5CC" />
           <Text strong>命名选项</Text>
+          {renameConfig.enabled && (
+            <Tag color="cyan" style={{ fontSize: 11, marginLeft: 8 }}>
+              高级重命名已启用
+            </Tag>
+          )}
         </Space>
-        <Space style={{ width: '100%' }} direction="vertical" size={8}>
-          <div style={{ width: '100%' }}>
-            <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
-              前缀
-            </Text>
-            <Input
-              placeholder="如: watermark_"
-              value={exportConfig.prefix}
-              onChange={(e) => updateExportConfig({ prefix: e.target.value })}
-              disabled={isExporting}
-            />
-          </div>
-          <div style={{ width: '100%' }}>
-            <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
-              后缀
-            </Text>
-            <Input
-              placeholder="如: _已加水印"
-              value={exportConfig.suffix}
-              onChange={(e) => updateExportConfig({ suffix: e.target.value })}
-              disabled={isExporting}
-            />
-          </div>
-        </Space>
+        {renameConfig.enabled ? (
+          <Alert
+            type="info"
+            showIcon
+            message="正在使用高级重命名规则"
+            description="前往「重命名」标签页配置复杂命名规则，当前前后缀设置将被忽略"
+            style={{ backgroundColor: '#1A1A2E', border: '1px solid #2A2A3E' }}
+          />
+        ) : (
+          <Space style={{ width: '100%' }} direction="vertical" size={8}>
+            <div style={{ width: '100%' }}>
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
+                前缀
+              </Text>
+              <Input
+                placeholder="如: watermark_"
+                value={exportConfig.prefix}
+                onChange={(e) => updateExportConfig({ prefix: e.target.value })}
+                disabled={isExporting}
+              />
+            </div>
+            <div style={{ width: '100%' }}>
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
+                后缀
+              </Text>
+              <Input
+                placeholder="如: _已加水印"
+                value={exportConfig.suffix}
+                onChange={(e) => updateExportConfig({ suffix: e.target.value })}
+                disabled={isExporting}
+              />
+            </div>
+          </Space>
+        )}
       </div>
 
       <div>

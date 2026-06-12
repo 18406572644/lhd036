@@ -12,10 +12,14 @@ import type {
   PreprocessConfig,
   WatchFolderConfig,
   WatchLogEntry,
+  RenameConfig,
+  RenamePreset,
+  RenameRule,
 } from '@/types';
 
 const STORAGE_KEY = 'watermark-templates';
 const WATCH_STORAGE_KEY = 'watch-folders';
+const RENAME_PRESETS_KEY = 'rename-presets';
 
 const defaultTextConfig: TextWatermarkConfig = {
   text: '水印文字',
@@ -73,6 +77,12 @@ const defaultExportConfig: ExportConfig = {
   suffix: '_watermarked',
 };
 
+const defaultRenameConfig: RenameConfig = {
+  enabled: false,
+  rules: [],
+  autoResolveConflict: true,
+};
+
 interface AppState {
   images: ImageInfo[];
   selectedImageId: string | null;
@@ -80,6 +90,8 @@ interface AppState {
   watermarkConfig: WatermarkConfig;
   templates: WatermarkTemplate[];
   exportConfig: ExportConfig;
+  renameConfig: RenameConfig;
+  renamePresets: RenamePreset[];
   isExporting: boolean;
   exportProgress: number;
   exportProgressDetail: ExportProgressDetail;
@@ -104,6 +116,15 @@ interface AppState {
   loadTemplate: (id: string) => void;
   deleteTemplate: (id: string) => void;
   updateExportConfig: (config: Partial<ExportConfig>) => void;
+  updateRenameConfig: (config: Partial<RenameConfig>) => void;
+  addRenameRule: (rule: RenameRule) => void;
+  updateRenameRule: (id: string, rule: Partial<RenameRule>) => void;
+  removeRenameRule: (id: string) => void;
+  moveRenameRule: (id: string, direction: 'up' | 'down') => void;
+  saveRenamePreset: (name: string) => void;
+  loadRenamePreset: (id: string) => void;
+  deleteRenamePreset: (id: string) => void;
+  loadRenamePresetsFromStorage: () => void;
   beginExport: (total: number) => void;
   setExportProgress: (progress: number) => void;
   updateExportProgressDetail: (detail: Partial<ExportProgressDetail> & { accumulative?: boolean }) => void;
@@ -127,6 +148,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   watermarkConfig: defaultWatermarkConfig,
   templates: [],
   exportConfig: defaultExportConfig,
+  renameConfig: defaultRenameConfig,
+  renamePresets: [],
   isExporting: false,
   exportProgress: 0,
   exportProgressDetail: {
@@ -260,6 +283,98 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       exportConfig: { ...state.exportConfig, ...config },
     })),
+
+  updateRenameConfig: (config) =>
+    set((state) => ({
+      renameConfig: { ...state.renameConfig, ...config },
+    })),
+
+  addRenameRule: (rule) =>
+    set((state) => ({
+      renameConfig: {
+        ...state.renameConfig,
+        rules: [...state.renameConfig.rules, rule],
+      },
+    })),
+
+  updateRenameRule: (id, rule) =>
+    set((state) => ({
+      renameConfig: {
+        ...state.renameConfig,
+        rules: state.renameConfig.rules.map((r) =>
+          r.id === id ? ({ ...r, ...rule } as RenameRule) : r
+        ),
+      },
+    })),
+
+  removeRenameRule: (id) =>
+    set((state) => ({
+      renameConfig: {
+        ...state.renameConfig,
+        rules: state.renameConfig.rules.filter((r) => r.id !== id),
+      },
+    })),
+
+  moveRenameRule: (id, direction) =>
+    set((state) => {
+      const rules = [...state.renameConfig.rules];
+      const idx = rules.findIndex((r) => r.id === id);
+      if (idx === -1) return state;
+      const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+      if (targetIdx < 0 || targetIdx >= rules.length) return state;
+      [rules[idx], rules[targetIdx]] = [rules[targetIdx], rules[idx]];
+      return {
+        renameConfig: {
+          ...state.renameConfig,
+          rules,
+        },
+      };
+    }),
+
+  saveRenamePreset: (name) => {
+    const { renameConfig, renamePresets } = get();
+    const newPreset: RenamePreset = {
+      id: Date.now().toString(),
+      name,
+      rules: JSON.parse(JSON.stringify(renameConfig.rules)),
+      createdAt: Date.now(),
+    };
+    const updatedPresets = [...renamePresets, newPreset];
+    localStorage.setItem(RENAME_PRESETS_KEY, JSON.stringify(updatedPresets));
+    set({ renamePresets: updatedPresets });
+  },
+
+  loadRenamePreset: (id) => {
+    const { renamePresets } = get();
+    const preset = renamePresets.find((p) => p.id === id);
+    if (preset) {
+      set((state) => ({
+        renameConfig: {
+          ...state.renameConfig,
+          rules: JSON.parse(JSON.stringify(preset.rules)),
+        },
+      }));
+    }
+  },
+
+  deleteRenamePreset: (id) => {
+    const { renamePresets } = get();
+    const updatedPresets = renamePresets.filter((p) => p.id !== id);
+    localStorage.setItem(RENAME_PRESETS_KEY, JSON.stringify(updatedPresets));
+    set({ renamePresets: updatedPresets });
+  },
+
+  loadRenamePresetsFromStorage: () => {
+    try {
+      const stored = localStorage.getItem(RENAME_PRESETS_KEY);
+      if (stored) {
+        const presets = JSON.parse(stored) as RenamePreset[];
+        set({ renamePresets: presets });
+      }
+    } catch {
+      console.error('Failed to load rename presets from storage');
+    }
+  },
 
   beginExport: (total) =>
     set({

@@ -163,3 +163,91 @@ export interface ElectronImageInfo {
   format: string;
   size: number;
 }
+
+export type RenameRuleType =
+  | 'template'
+  | 'replace'
+  | 'case'
+  | 'trim'
+  | 'substring'
+  | 'condition';
+
+export type RenameCaseType = 'upper' | 'lower' | 'capitalize' | 'title';
+
+export type RenameTrimType = 'spaces' | 'special' | 'both';
+
+export interface RenameRuleBase {
+  id: string;
+  type: RenameRuleType;
+  enabled: boolean;
+}
+
+export interface RenameTemplateRule extends RenameRuleBase {
+  type: 'template';
+  template: string;
+}
+
+export interface RenameReplaceRule extends RenameRuleBase {
+  type: 'replace';
+  find: string;
+  replace: string;
+  useRegex: boolean;
+}
+
+export interface RenameCaseRule extends RenameRuleBase {
+  type: 'case';
+  caseType: RenameCaseType;
+}
+
+export interface RenameTrimRule extends RenameRuleBase {
+  type: 'trim';
+  trimType: RenameTrimType;
+}
+
+export interface RenameSubstringRule extends RenameRuleBase {
+  type: 'substring';
+  start: number;
+  length: number;
+}
+
+export type RenameConditionField = 'width' | 'height' | 'ratio';
+export type RenameConditionOperator = '>' | '<' | '>=' | '<=' | '==' | '!=';
+
+export interface RenameConditionRule extends RenameRuleBase {
+  type: 'condition';
+  field: RenameConditionField;
+  operator: RenameConditionOperator;
+  value: number;
+  trueText: string;
+  falseText: string;
+  position: 'prefix' | 'suffix';
+}
+
+export type RenameRule =
+  | RenameTemplateRule
+  | RenameReplaceRule
+  | RenameCaseRule
+  | RenameTrimRule
+  | RenameSubstringRule
+  | RenameConditionRule;
+
+export interface RenamePreset {
+  id: string;
+  name: string;
+  rules: RenameRule[];
+  createdAt: number;
+}
+
+export interface RenameConfig {
+  enabled: boolean;
+  rules: RenameRule[];
+  autoResolveConflict: boolean;
+}
+
+export interface RenamePreviewItem {
+  id: string;
+  originalName: string;
+  newName: string;
+  hasConflict: boolean;
+  conflictGroup?: string;
+}

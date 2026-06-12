@@ -15,6 +15,7 @@ const { Content } = Layout;
 export default function Home() {
   const loadTemplatesFromStorage = useAppStore((state) => state.loadTemplatesFromStorage);
   const loadWatchFoldersFromStorage = useAppStore((state) => state.loadWatchFoldersFromStorage);
+  const loadRenamePresetsFromStorage = useAppStore((state) => state.loadRenamePresetsFromStorage);
   const updateExportProgressDetail = useAppStore((state) => state.updateExportProgressDetail);
   const addWatchLog = useAppStore((state) => state.addWatchLog);
   const configPanelRef = useRef<HTMLDivElement>(null);
@@ -22,7 +23,8 @@ export default function Home() {
   useEffect(() => {
     loadTemplatesFromStorage();
     loadWatchFoldersFromStorage();
-  }, [loadTemplatesFromStorage, loadWatchFoldersFromStorage]);
+    loadRenamePresetsFromStorage();
+  }, [loadTemplatesFromStorage, loadWatchFoldersFromStorage, loadRenamePresetsFromStorage]);
 
   useEffect(() => {
     const removeListener = electronApi.onExportProgress((progress) => {
@@ -54,8 +56,11 @@ export default function Home() {
 
   const handleExport = () => {
     const tabs = document.querySelectorAll('.ant-tabs-tab');
-    if (tabs.length >= 6) {
-      (tabs[5] as HTMLElement).click();
+    const exportIdx = Array.from(tabs).findIndex(
+      (t) => t.textContent?.includes('导出')
+    );
+    if (exportIdx >= 0) {
+      (tabs[exportIdx] as HTMLElement).click();
     }
   };
 

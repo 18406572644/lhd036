@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { Tabs } from 'antd';
-import { Type, Image, Move, Download, Grid3x3, Settings2, Eye } from 'lucide-react';
+import { Type, Image, Move, Download, Grid3x3, Settings2, Eye, FileSignature } from 'lucide-react';
 import TextWatermarkTab from './TextWatermarkTab';
 import ImageWatermarkTab from './ImageWatermarkTab';
 import PositionTab from './PositionTab';
 import TileTab from './TileTab';
 import PreprocessTab from './PreprocessTab';
+import RenameTab from './RenameTab';
 import ExportTab from './ExportTab';
 import WatchMonitorTab from './WatchMonitorTab';
 import { useAppStore } from '@/store/useAppStore';
@@ -64,6 +65,16 @@ export default function ConfigPanel() {
         </span>
       ),
       children: <PreprocessTab />,
+    },
+    {
+      key: 'rename',
+      label: (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+          <FileSignature size={14} />
+          重命名
+        </span>
+      ),
+      children: <RenameTab />,
     },
     {
       key: 'export',

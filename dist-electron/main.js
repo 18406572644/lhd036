@@ -74,11 +74,14 @@ function shouldProcessFile(filePath, rule) {
     }
     return true;
 }
-function resolveOutputPath(inputPath, outputDir, config, rule) {
+function resolveOutputPath(inputPath, outputDir, config, rule, generatedOutputs) {
     const ext = path.extname(inputPath);
     const baseName = path.basename(inputPath, ext);
     const outputName = `${config.prefix}${baseName}${config.suffix}.${config.format}`;
     const outputPath = path.join(outputDir, outputName);
+    if (generatedOutputs.has(outputPath.toLowerCase())) {
+        return null;
+    }
     if (fs.existsSync(outputPath)) {
         switch (rule.renameStrategy) {
             case 'skip':
@@ -91,22 +94,32 @@ function resolveOutputPath(inputPath, outputDir, config, rule) {
                 do {
                     candidate = path.join(outputDir, `${config.prefix}${baseName}${config.suffix}_${idx}.${config.format}`);
                     idx++;
-                } while (fs.existsSync(candidate));
+                } while (fs.existsSync(candidate) || generatedOutputs.has(candidate.toLowerCase()));
                 return candidate;
             }
         }
     }
     return outputPath;
 }
+const DEDUP_WINDOW_MS = 5000;
 async function processWatchFile(watchId, filePath, config) {
     if (globalPaused)
         return;
     const activeWatch = activeWatches.get(watchId);
     if (!activeWatch)
         return;
+    const resolvedFilePath = path.resolve(filePath).toLowerCase();
+    if (activeWatch.generatedOutputs.has(resolvedFilePath)) {
+        return;
+    }
+    const normalizedOutputDir = path.resolve(config.outputDir).toLowerCase();
+    if (resolvedFilePath.startsWith(normalizedOutputDir + path.sep) || resolvedFilePath === normalizedOutputDir) {
+        sendWatchLog(watchId, filePath, 'skipped', '文件位于输出目录内，已跳过');
+        return;
+    }
     const now = Date.now();
     const lastProcessed = activeWatch.processedFiles.get(filePath);
-    if (lastProcessed && now - lastProcessed < 3000)
+    if (lastProcessed && now - lastProcessed < DEDUP_WINDOW_MS)
         return;
     if (!shouldProcessFile(filePath, config.rule)) {
         sendWatchLog(watchId, filePath, 'skipped', '文件不满足处理规则');
@@ -114,13 +127,14 @@ async function processWatchFile(watchId, filePath, config) {
     }
     activeWatch.processedFiles.set(filePath, now);
     sendWatchLog(watchId, filePath, 'processing', '正在处理...');
-    const outputPath = resolveOutputPath(filePath, config.outputDir, config.exportConfig, config.rule);
+    const outputPath = resolveOutputPath(filePath, config.outputDir, config.exportConfig, config.rule, activeWatch.generatedOutputs);
     if (outputPath === null) {
-        sendWatchLog(watchId, filePath, 'skipped', '输出文件已存在，已跳过');
+        sendWatchLog(watchId, filePath, 'skipped', '输出文件已存在或已处理，已跳过');
         return;
     }
     try {
         await processImage(filePath, outputPath, config.exportConfig, config.watermarkConfig);
+        activeWatch.generatedOutputs.add(path.resolve(outputPath).toLowerCase());
         sendWatchLog(watchId, filePath, 'success', `处理完成 → ${path.basename(outputPath)}`);
     }
     catch (error) {
@@ -137,9 +151,19 @@ function startWatching(config) {
     const activeWatch = {
         watcher: null,
         timer: null,
+        cleanupTimer: null,
         processedFiles: new Map(),
+        generatedOutputs: new Set(),
         config,
     };
+    activeWatch.cleanupTimer = setInterval(() => {
+        const now = Date.now();
+        for (const [fp, ts] of activeWatch.processedFiles) {
+            if (now - ts > DEDUP_WINDOW_MS * 2) {
+                activeWatch.processedFiles.delete(fp);
+            }
+        }
+    }, 30000);
     if (config.triggers.includes('create') || config.triggers.includes('change')) {
         try {
             const debounceMap = new Map();
@@ -147,6 +171,9 @@ function startWatching(config) {
                 if (!filename)
                     return;
                 const filePath = path.join(config.watchPath, filename);
+                if (activeWatch.generatedOutputs.has(path.resolve(filePath).toLowerCase())) {
+                    return;
+                }
                 const isCreate = eventType === 'rename' && fs.existsSync(filePath);
                 const isChange = eventType === 'change';
                 const shouldTrigger = (isCreate && config.triggers.includes('create')) ||
@@ -202,6 +229,9 @@ function stopWatching(id) {
     }
     if (active.timer) {
         clearInterval(active.timer);
+    }
+    if (active.cleanupTimer) {
+        clearInterval(active.cleanupTimer);
     }
     activeWatches.delete(id);
 }
@@ -794,7 +824,6 @@ electron_1.ipcMain.handle('watch-trigger-scan', async (_event, watchId) => {
             try {
                 const stat = fs.statSync(filePath);
                 if (stat.isFile()) {
-                    active.processedFiles.delete(filePath);
                     processWatchFile(watchId, filePath, active.config);
                 }
             }

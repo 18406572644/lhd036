@@ -72,7 +72,7 @@ export const electronApi = {
 
   async exportImages(
     config: ExportConfig,
-    items: Array<{ path: string; name: string }>,
+    items: Array<{ path: string; name: string; outputName?: string }>,
     watermark: WatermarkConfig,
     onProgress?: (progress: ExportProgress) => void
   ): Promise<ExportResult> {

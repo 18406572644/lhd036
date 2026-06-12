@@ -830,7 +830,7 @@ async function processImage(
       for (const f of tempFiles) {
         try {
           fs.unlinkSync(f);
-        } catch (_err) {
+        } catch {
           // ignore
         }
       }
@@ -898,7 +898,7 @@ ipcMain.handle(
   async (
     event,
     config: ExportConfig,
-    items: Array<{ path: string; name: string }>,
+    items: Array<{ path: string; name: string; outputName?: string }>,
     watermark: WatermarkConfig
   ) => {
     const total = items.length;
@@ -907,9 +907,14 @@ ipcMain.handle(
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       try {
-        const ext = path.extname(item.name);
-        const baseName = path.basename(item.name, ext);
-        const outputName = `${config.prefix}${baseName}${config.suffix}.${config.format}`;
+        let outputName: string;
+        if (item.outputName) {
+          outputName = item.outputName;
+        } else {
+          const ext = path.extname(item.name);
+          const baseName = path.basename(item.name, ext);
+          outputName = `${config.prefix}${baseName}${config.suffix}.${config.format}`;
+        }
         const outputPath = path.join(config.outputDir, outputName);
 
         await processImage(item.path, outputPath, config, watermark);
