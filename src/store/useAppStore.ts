@@ -10,9 +10,12 @@ import type {
   ExportProgressDetail,
   TileConfig,
   PreprocessConfig,
+  WatchFolderConfig,
+  WatchLogEntry,
 } from '@/types';
 
 const STORAGE_KEY = 'watermark-templates';
+const WATCH_STORAGE_KEY = 'watch-folders';
 
 const defaultTextConfig: TextWatermarkConfig = {
   text: '水印文字',
@@ -80,6 +83,9 @@ interface AppState {
   isExporting: boolean;
   exportProgress: number;
   exportProgressDetail: ExportProgressDetail;
+  watchFolders: WatchFolderConfig[];
+  watchLogs: WatchLogEntry[];
+  watchGlobalPaused: boolean;
 
   addImages: (images: ImageInfo[]) => void;
   removeImage: (id: string) => void;
@@ -104,6 +110,14 @@ interface AppState {
   finishExport: () => void;
   resetExportProgress: () => void;
   loadTemplatesFromStorage: () => void;
+  addWatchFolder: (config: WatchFolderConfig) => void;
+  updateWatchFolder: (id: string, config: Partial<WatchFolderConfig>) => void;
+  removeWatchFolder: (id: string) => void;
+  toggleWatchFolder: (id: string) => void;
+  setWatchGlobalPaused: (paused: boolean) => void;
+  addWatchLog: (entry: WatchLogEntry) => void;
+  clearWatchLogs: (watchFolderId?: string) => void;
+  loadWatchFoldersFromStorage: () => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -122,6 +136,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     success: 0,
     failed: 0,
   },
+  watchFolders: [],
+  watchLogs: [],
+  watchGlobalPaused: false,
 
   addImages: (newImages) =>
     set((state) => ({
@@ -307,6 +324,69 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch {
       console.error('Failed to load templates from storage');
+    }
+  },
+
+  addWatchFolder: (config) =>
+    set((state) => {
+      const updated = [...state.watchFolders, config];
+      localStorage.setItem(WATCH_STORAGE_KEY, JSON.stringify(updated));
+      return { watchFolders: updated };
+    }),
+
+  updateWatchFolder: (id, config) =>
+    set((state) => {
+      const updated = state.watchFolders.map((f) =>
+        f.id === id ? { ...f, ...config } : f
+      );
+      localStorage.setItem(WATCH_STORAGE_KEY, JSON.stringify(updated));
+      return { watchFolders: updated };
+    }),
+
+  removeWatchFolder: (id) =>
+    set((state) => {
+      const updated = state.watchFolders.filter((f) => f.id !== id);
+      localStorage.setItem(WATCH_STORAGE_KEY, JSON.stringify(updated));
+      return {
+        watchFolders: updated,
+        watchLogs: state.watchLogs.filter((l) => l.watchFolderId !== id),
+      };
+    }),
+
+  toggleWatchFolder: (id) =>
+    set((state) => {
+      const updated = state.watchFolders.map((f) =>
+        f.id === id ? { ...f, enabled: !f.enabled } : f
+      );
+      localStorage.setItem(WATCH_STORAGE_KEY, JSON.stringify(updated));
+      return { watchFolders: updated };
+    }),
+
+  setWatchGlobalPaused: (paused) =>
+    set({ watchGlobalPaused: paused }),
+
+  addWatchLog: (entry) =>
+    set((state) => {
+      const logs = [entry, ...state.watchLogs].slice(0, 500);
+      return { watchLogs: logs };
+    }),
+
+  clearWatchLogs: (watchFolderId) =>
+    set((state) => ({
+      watchLogs: watchFolderId
+        ? state.watchLogs.filter((l) => l.watchFolderId !== watchFolderId)
+        : [],
+    })),
+
+  loadWatchFoldersFromStorage: () => {
+    try {
+      const stored = localStorage.getItem(WATCH_STORAGE_KEY);
+      if (stored) {
+        const watchFolders = JSON.parse(stored) as WatchFolderConfig[];
+        set({ watchFolders });
+      }
+    } catch {
+      console.error('Failed to load watch folders from storage');
     }
   },
 }));

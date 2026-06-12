@@ -8,17 +8,21 @@ import ExportProgress from '@/components/ExportProgress';
 import { useAppStore } from '@/store/useAppStore';
 import { useEffect, useRef } from 'react';
 import { electronApi } from '@/utils/electronApi';
+import type { WatchLogEntry } from '@/types';
 
 const { Content } = Layout;
 
 export default function Home() {
   const loadTemplatesFromStorage = useAppStore((state) => state.loadTemplatesFromStorage);
+  const loadWatchFoldersFromStorage = useAppStore((state) => state.loadWatchFoldersFromStorage);
   const updateExportProgressDetail = useAppStore((state) => state.updateExportProgressDetail);
+  const addWatchLog = useAppStore((state) => state.addWatchLog);
   const configPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadTemplatesFromStorage();
-  }, [loadTemplatesFromStorage]);
+    loadWatchFoldersFromStorage();
+  }, [loadTemplatesFromStorage, loadWatchFoldersFromStorage]);
 
   useEffect(() => {
     const removeListener = electronApi.onExportProgress((progress) => {
@@ -33,6 +37,20 @@ export default function Home() {
     });
     return removeListener;
   }, [updateExportProgressDetail]);
+
+  useEffect(() => {
+    const removeListener = electronApi.onWatchLog((log) => {
+      addWatchLog(log as WatchLogEntry);
+    });
+    return removeListener;
+  }, [addWatchLog]);
+
+  useEffect(() => {
+    const folders = useAppStore.getState().watchFolders;
+    if (folders.length > 0) {
+      electronApi.watchSync(folders);
+    }
+  }, []);
 
   const handleExport = () => {
     const tabs = document.querySelectorAll('.ant-tabs-tab');

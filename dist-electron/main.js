@@ -228,6 +228,8 @@ function calculatePosition(preset, imageWidth, imageHeight, watermarkWidth, wate
             };
         case 'custom':
             return customPos ? { top: Math.round(customPos.y), left: Math.round(customPos.x) } : { top: 0, left: 0 };
+        case 'tile':
+            return { top: 0, left: 0 };
         default:
             return { top: margin, left: margin };
     }
@@ -260,26 +262,116 @@ function createTextWatermarkOverlay(text, fontFamily, fontSize, color, opacity, 
 </svg>`;
     return Buffer.from(svg.trim());
 }
+function createTiledTextWatermarkOverlay(text, fontFamily, fontSize, color, opacity, rotation, imageWidth, imageHeight, tileConfig) {
+    const { width: textW, height: textH } = measureTextSharp(text, fontFamily, fontSize);
+    const { r, g, b } = hexToRgbValues(color);
+    const safeOpacity = Math.max(0, Math.min(1, opacity));
+    const hSpacing = tileConfig.horizontalSpacing;
+    const vSpacing = tileConfig.verticalSpacing;
+    const stepX = textW + hSpacing;
+    const stepY = textH + vSpacing;
+    if (stepX <= 0 || stepY <= 0)
+        return Buffer.from('<svg></svg>');
+    const offsetX = tileConfig.offsetX;
+    const offsetY = tileConfig.offsetY;
+    const margin = Math.max(textW, textH) * 2;
+    const startX = -margin + offsetX;
+    const startY = -margin + offsetY;
+    let textElements = '';
+    let rowIndex = 0;
+    for (let y = startY; y < imageHeight + margin; y += stepY) {
+        const rowOffsetX = tileConfig.staggered && rowIndex % 2 !== 0 ? stepX / 2 : 0;
+        for (let x = startX; x < imageWidth + margin; x += stepX) {
+            const cx = x + textW / 2 + rowOffsetX;
+            const cy = y + textH / 2;
+            textElements += `<text x="${cx}" y="${cy}" font-family="${fontFamily}" font-size="${fontSize}" fill="rgb(${r}, ${g}, ${b})" fill-opacity="${safeOpacity}" text-anchor="middle" dominant-baseline="central" transform="rotate(${rotation} ${cx} ${cy})">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</text>`;
+        }
+        rowIndex++;
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidth}" height="${imageHeight}">${textElements}</svg>`;
+    return Buffer.from(svg.trim());
+}
+function computePreprocessedSize(origW, origH, preprocess) {
+    const { resizeMode, fixedWidth, fixedHeight, maxSide, scalePercent } = preprocess;
+    switch (resizeMode) {
+        case 'fixed-width': {
+            if (fixedWidth <= 0)
+                return { width: origW, height: origH };
+            const ratio = origH / origW;
+            return { width: fixedWidth, height: Math.round(fixedWidth * ratio) };
+        }
+        case 'fixed-height': {
+            if (fixedHeight <= 0)
+                return { width: origW, height: origH };
+            const ratio = origW / origH;
+            return { height: fixedHeight, width: Math.round(fixedHeight * ratio) };
+        }
+        case 'max-side': {
+            if (maxSide <= 0)
+                return { width: origW, height: origH };
+            const longer = Math.max(origW, origH);
+            if (longer <= maxSide)
+                return { width: origW, height: origH };
+            const scale = maxSide / longer;
+            return { width: Math.round(origW * scale), height: Math.round(origH * scale) };
+        }
+        case 'percent': {
+            if (scalePercent <= 0)
+                return { width: origW, height: origH };
+            const s = scalePercent / 100;
+            return { width: Math.round(origW * s), height: Math.round(origH * s) };
+        }
+        default:
+            return { width: origW, height: origH };
+    }
+}
 async function processImage(inputPath, outputPath, config, watermark) {
-    const src = (0, sharp_1.default)(inputPath);
+    let src = (0, sharp_1.default)(inputPath);
     const metadata = await src.metadata();
-    const imageWidth = metadata.width || 0;
-    const imageHeight = metadata.height || 0;
+    let imageWidth = metadata.width || 0;
+    let imageHeight = metadata.height || 0;
+    const preprocess = watermark.preprocess;
+    if (preprocess && preprocess.rotation !== 'none') {
+        if (preprocess.rotation === 'auto-exif') {
+            src = src.rotate();
+        }
+        else {
+            const angle = parseInt(preprocess.rotation, 10);
+            if (!isNaN(angle)) {
+                src = src.rotate(angle, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+            }
+        }
+        const rotatedMeta = await src.metadata();
+        imageWidth = rotatedMeta.width || imageWidth;
+        imageHeight = rotatedMeta.height || imageHeight;
+    }
+    if (preprocess && preprocess.resizeMode !== 'none') {
+        const { width: newW, height: newH } = computePreprocessedSize(imageWidth, imageHeight, preprocess);
+        if (newW > 0 && newH > 0) {
+            src = src.resize(newW, newH, { fit: 'fill', kernel: 'lanczos3' });
+            imageWidth = newW;
+            imageHeight = newH;
+        }
+    }
     const adaptiveScale = getAdaptiveScale(imageWidth);
     const composites = [];
+    const isTile = watermark.position === 'tile';
     if (watermark.type === 'text') {
         const textConfig = watermark.text;
         if (textConfig.text && textConfig.text.trim()) {
             const effectiveFontSize = Math.max(8, Math.round(textConfig.fontSize * adaptiveScale));
-            const dispMargin = Math.round(watermark.margin * adaptiveScale);
-            const customPx = Math.round(watermark.positionValue.x * adaptiveScale);
-            const customPy = Math.round(watermark.positionValue.y * adaptiveScale);
-            const svgBuffer = createTextWatermarkOverlay(textConfig.text, textConfig.fontFamily, effectiveFontSize, textConfig.color, textConfig.opacity, textConfig.rotation, imageWidth, imageHeight, dispMargin, customPx, customPy, watermark.position);
-            composites.push({
-                input: svgBuffer,
-                left: 0,
-                top: 0,
-            });
+            if (isTile) {
+                const tileConfig = watermark.tile;
+                const svgBuffer = createTiledTextWatermarkOverlay(textConfig.text, textConfig.fontFamily, effectiveFontSize, textConfig.color, textConfig.opacity, textConfig.rotation, imageWidth, imageHeight, tileConfig);
+                composites.push({ input: svgBuffer, left: 0, top: 0 });
+            }
+            else {
+                const dispMargin = Math.round(watermark.margin * adaptiveScale);
+                const customPx = Math.round(watermark.positionValue.x * adaptiveScale);
+                const customPy = Math.round(watermark.positionValue.y * adaptiveScale);
+                const svgBuffer = createTextWatermarkOverlay(textConfig.text, textConfig.fontFamily, effectiveFontSize, textConfig.color, textConfig.opacity, textConfig.rotation, imageWidth, imageHeight, dispMargin, customPx, customPy, watermark.position);
+                composites.push({ input: svgBuffer, left: 0, top: 0 });
+            }
         }
     }
     else if (watermark.type === 'image' && watermark.image.imageUrl) {
@@ -325,26 +417,65 @@ async function processImage(inputPath, outputPath, config, watermark) {
             const wmMeta = await (0, sharp_1.default)(wmBuf).metadata();
             const bboxW = wmMeta.width || targetWmW;
             const bboxH = wmMeta.height || targetWmH;
-            const dispMargin = Math.round(watermark.margin * adaptiveScale);
-            const customPx = Math.round(watermark.positionValue.x * adaptiveScale);
-            const customPy = Math.round(watermark.positionValue.y * adaptiveScale);
-            const pos = calculatePosition(watermark.position, imageWidth, imageHeight, bboxW, bboxH, dispMargin, { x: customPx, y: customPy });
-            const overlayBuf = await (0, sharp_1.default)({
-                create: {
-                    width: imageWidth,
-                    height: imageHeight,
-                    channels: 4,
-                    background: { r: 0, g: 0, b: 0, alpha: 0 },
-                },
-            })
-                .composite([{ input: wmBuf, left: pos.left, top: pos.top }])
-                .png()
-                .toBuffer();
-            composites.push({
-                input: overlayBuf,
-                left: 0,
-                top: 0,
-            });
+            if (isTile) {
+                const tileConfig = watermark.tile;
+                const hSpacing = tileConfig.horizontalSpacing;
+                const vSpacing = tileConfig.verticalSpacing;
+                const stepX = bboxW + hSpacing;
+                const stepY = bboxH + vSpacing;
+                if (stepX > 0 && stepY > 0) {
+                    const offsetX = tileConfig.offsetX;
+                    const offsetY = tileConfig.offsetY;
+                    const margin = Math.max(bboxW, bboxH) * 2;
+                    const startX = -margin + offsetX;
+                    const startY = -margin + offsetY;
+                    const overlayComposites = [];
+                    let rowIndex = 0;
+                    for (let y = startY; y < imageHeight + margin; y += stepY) {
+                        const rowOffsetX = tileConfig.staggered && rowIndex % 2 !== 0 ? stepX / 2 : 0;
+                        for (let x = startX; x < imageWidth + margin; x += stepX) {
+                            overlayComposites.push({
+                                input: wmBuf,
+                                left: Math.round(x + rowOffsetX),
+                                top: Math.round(y),
+                            });
+                        }
+                        rowIndex++;
+                    }
+                    if (overlayComposites.length > 0) {
+                        const overlayBuf = await (0, sharp_1.default)({
+                            create: {
+                                width: imageWidth,
+                                height: imageHeight,
+                                channels: 4,
+                                background: { r: 0, g: 0, b: 0, alpha: 0 },
+                            },
+                        })
+                            .composite(overlayComposites)
+                            .png()
+                            .toBuffer();
+                        composites.push({ input: overlayBuf, left: 0, top: 0 });
+                    }
+                }
+            }
+            else {
+                const dispMargin = Math.round(watermark.margin * adaptiveScale);
+                const customPx = Math.round(watermark.positionValue.x * adaptiveScale);
+                const customPy = Math.round(watermark.positionValue.y * adaptiveScale);
+                const pos = calculatePosition(watermark.position, imageWidth, imageHeight, bboxW, bboxH, dispMargin, { x: customPx, y: customPy });
+                const overlayBuf = await (0, sharp_1.default)({
+                    create: {
+                        width: imageWidth,
+                        height: imageHeight,
+                        channels: 4,
+                        background: { r: 0, g: 0, b: 0, alpha: 0 },
+                    },
+                })
+                    .composite([{ input: wmBuf, left: pos.left, top: pos.top }])
+                    .png()
+                    .toBuffer();
+                composites.push({ input: overlayBuf, left: 0, top: 0 });
+            }
         }
         finally {
             for (const f of tempFiles) {
@@ -357,9 +488,38 @@ async function processImage(inputPath, outputPath, config, watermark) {
             }
         }
     }
-    let pipeline = (0, sharp_1.default)(inputPath);
+    let pipeline = src;
     if (composites.length > 0) {
         pipeline = pipeline.composite(composites);
+    }
+    if (preprocess && preprocess.targetMaxSizeEnabled && preprocess.targetMaxSize > 0) {
+        const maxSizeBytes = preprocess.targetMaxSize * 1024 * 1024;
+        let quality = config.quality;
+        let resultBuf = null;
+        for (let attempt = 0; attempt < 10; attempt++) {
+            let testPipeline = pipeline.clone();
+            switch (config.format) {
+                case 'jpeg':
+                    testPipeline = testPipeline.flatten({ background: { r: 255, g: 255, b: 255 } }).jpeg({ quality, mozjpeg: true });
+                    break;
+                case 'png':
+                    testPipeline = testPipeline.png({ compressionLevel: 9 });
+                    break;
+                case 'webp':
+                    testPipeline = testPipeline.webp({ quality, effort: 4 });
+                    break;
+            }
+            resultBuf = await testPipeline.toBuffer();
+            if (resultBuf.length <= maxSizeBytes || config.format === 'png')
+                break;
+            quality = Math.max(10, quality - 10);
+            if (quality <= 10)
+                break;
+        }
+        if (resultBuf) {
+            fs.writeFileSync(outputPath, resultBuf);
+            return;
+        }
     }
     switch (config.format) {
         case 'jpeg':

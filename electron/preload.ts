@@ -108,6 +108,37 @@ export interface FileFilter {
   extensions: string[];
 }
 
+export interface WatchLogEvent {
+  id: string;
+  watchFolderId: string;
+  timestamp: number;
+  filePath: string;
+  action: 'processing' | 'success' | 'error' | 'skipped';
+  message: string;
+}
+
+export type WatchTrigger = 'create' | 'change' | 'timer';
+export type RenameStrategy = 'skip' | 'overwrite' | 'suffix';
+
+export interface WatchFolderRule {
+  extensions: string[];
+  minFileSize: number;
+  renameStrategy: RenameStrategy;
+}
+
+export interface WatchFolderConfig {
+  id: string;
+  name: string;
+  watchPath: string;
+  outputDir: string;
+  watermarkConfig: WatermarkConfig;
+  exportConfig: ExportConfig;
+  triggers: WatchTrigger[];
+  rule: WatchFolderRule;
+  scanInterval: number;
+  enabled: boolean;
+}
+
 export interface ElectronAPI {
   selectFiles: (filters?: FileFilter[]) => Promise<string[]>;
   selectDirectory: () => Promise<string | null>;
@@ -120,6 +151,11 @@ export interface ElectronAPI {
     onProgress?: (progress: ExportProgress) => void
   ) => Promise<ExportResult>;
   onExportProgress: (callback: (progress: ExportProgress) => void) => () => void;
+  watchSync: (configs: WatchFolderConfig[]) => Promise<boolean>;
+  watchPause: (paused: boolean) => Promise<boolean>;
+  watchStopAll: () => Promise<boolean>;
+  watchTriggerScan: (watchId: string) => Promise<boolean>;
+  onWatchLog: (callback: (log: WatchLogEvent) => void) => () => void;
 }
 
 const api: ElectronAPI = {
@@ -166,6 +202,32 @@ const api: ElectronAPI = {
     ipcRenderer.on('export-progress', handler);
     return () => {
       ipcRenderer.removeListener('export-progress', handler);
+    };
+  },
+
+  watchSync: (configs: WatchFolderConfig[]) => {
+    return ipcRenderer.invoke('watch-sync', configs);
+  },
+
+  watchPause: (paused: boolean) => {
+    return ipcRenderer.invoke('watch-pause', paused);
+  },
+
+  watchStopAll: () => {
+    return ipcRenderer.invoke('watch-stop-all');
+  },
+
+  watchTriggerScan: (watchId: string) => {
+    return ipcRenderer.invoke('watch-trigger-scan', watchId);
+  },
+
+  onWatchLog: (callback: (log: WatchLogEvent) => void) => {
+    const handler = (_event: unknown, log: WatchLogEvent) => {
+      callback(log);
+    };
+    ipcRenderer.on('watch-log', handler);
+    return () => {
+      ipcRenderer.removeListener('watch-log', handler);
     };
   },
 };

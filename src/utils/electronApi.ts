@@ -1,11 +1,12 @@
 import type {
   FileFilter,
-  ImageInfo,
   ElectronImageInfo,
   ExportConfig,
   WatermarkConfig,
   ExportProgress,
   ExportResult,
+  WatchFolderConfig,
+  WatchLogEntry,
 } from '@/types';
 
 const isElectron = typeof window !== 'undefined' && 'electronAPI' in window;
@@ -91,6 +92,43 @@ export const electronApi = {
   onExportProgress(callback: (progress: ExportProgress) => void): () => void {
     if (isElectron && window.electronAPI.onExportProgress) {
       return window.electronAPI.onExportProgress(callback);
+    }
+    return () => {};
+  },
+
+  async watchSync(configs: WatchFolderConfig[]): Promise<boolean> {
+    if (isElectron && window.electronAPI.watchSync) {
+      return window.electronAPI.watchSync(configs);
+    }
+    return false;
+  },
+
+  async watchPause(paused: boolean): Promise<boolean> {
+    if (isElectron && window.electronAPI.watchPause) {
+      return window.electronAPI.watchPause(paused);
+    }
+    return false;
+  },
+
+  async watchStopAll(): Promise<boolean> {
+    if (isElectron && window.electronAPI.watchStopAll) {
+      return window.electronAPI.watchStopAll();
+    }
+    return false;
+  },
+
+  async watchTriggerScan(watchId: string): Promise<boolean> {
+    if (isElectron && window.electronAPI.watchTriggerScan) {
+      return window.electronAPI.watchTriggerScan(watchId);
+    }
+    return false;
+  },
+
+  onWatchLog(callback: (log: WatchLogEntry) => void): () => void {
+    if (isElectron && window.electronAPI.onWatchLog) {
+      return window.electronAPI.onWatchLog(
+        callback as (log: { id: string; watchFolderId: string; timestamp: number; filePath: string; action: 'processing' | 'success' | 'error' | 'skipped'; message: string }) => void
+      );
     }
     return () => {};
   },

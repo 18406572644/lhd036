@@ -125,6 +125,37 @@ export interface ExportResult {
   }>;
 }
 
+export type WatchTrigger = 'create' | 'change' | 'timer';
+export type RenameStrategy = 'skip' | 'overwrite' | 'suffix';
+
+export interface WatchFolderRule {
+  extensions: string[];
+  minFileSize: number;
+  renameStrategy: RenameStrategy;
+}
+
+export interface WatchFolderConfig {
+  id: string;
+  name: string;
+  watchPath: string;
+  outputDir: string;
+  watermarkConfig: WatermarkConfig;
+  exportConfig: ExportConfig;
+  triggers: WatchTrigger[];
+  rule: WatchFolderRule;
+  scanInterval: number;
+  enabled: boolean;
+}
+
+export interface WatchLogEntry {
+  id: string;
+  watchFolderId: string;
+  timestamp: number;
+  filePath: string;
+  action: 'processing' | 'success' | 'error' | 'skipped';
+  message: string;
+}
+
 export interface ElectronImageInfo {
   path: string;
   width: number;

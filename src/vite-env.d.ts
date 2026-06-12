@@ -108,6 +108,37 @@ interface FileFilter {
   extensions: string[];
 }
 
+interface WatchLogEvent {
+  id: string;
+  watchFolderId: string;
+  timestamp: number;
+  filePath: string;
+  action: 'processing' | 'success' | 'error' | 'skipped';
+  message: string;
+}
+
+type WatchTrigger = 'create' | 'change' | 'timer';
+type RenameStrategy = 'skip' | 'overwrite' | 'suffix';
+
+interface WatchFolderRule {
+  extensions: string[];
+  minFileSize: number;
+  renameStrategy: RenameStrategy;
+}
+
+interface WatchFolderConfig {
+  id: string;
+  name: string;
+  watchPath: string;
+  outputDir: string;
+  watermarkConfig: WatermarkConfig;
+  exportConfig: ExportConfig;
+  triggers: WatchTrigger[];
+  rule: WatchFolderRule;
+  scanInterval: number;
+  enabled: boolean;
+}
+
 interface ElectronAPI {
   selectFiles: (filters?: FileFilter[]) => Promise<string[]>;
   selectDirectory: () => Promise<string | null>;
@@ -120,6 +151,11 @@ interface ElectronAPI {
     onProgress?: (progress: ExportProgress) => void
   ) => Promise<ExportResult>;
   onExportProgress: (callback: (progress: ExportProgress) => void) => () => void;
+  watchSync: (configs: WatchFolderConfig[]) => Promise<boolean>;
+  watchPause: (paused: boolean) => Promise<boolean>;
+  watchStopAll: () => Promise<boolean>;
+  watchTriggerScan: (watchId: string) => Promise<boolean>;
+  onWatchLog: (callback: (log: WatchLogEvent) => void) => () => void;
 }
 
 interface Window {

@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { Tabs } from 'antd';
-import { Type, Image, Move, Download, Grid3x3, Settings2 } from 'lucide-react';
+import { Type, Image, Move, Download, Grid3x3, Settings2, Eye } from 'lucide-react';
 import TextWatermarkTab from './TextWatermarkTab';
 import ImageWatermarkTab from './ImageWatermarkTab';
 import PositionTab from './PositionTab';
 import TileTab from './TileTab';
 import PreprocessTab from './PreprocessTab';
 import ExportTab from './ExportTab';
+import WatchMonitorTab from './WatchMonitorTab';
 import { useAppStore } from '@/store/useAppStore';
 
 export default function ConfigPanel() {
@@ -73,6 +74,16 @@ export default function ConfigPanel() {
         </span>
       ),
       children: <ExportTab />,
+    },
+    {
+      key: 'watch',
+      label: (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+          <Eye size={14} />
+          监控
+        </span>
+      ),
+      children: <WatchMonitorTab />,
     },
   ];
 
